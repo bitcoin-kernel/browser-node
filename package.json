@@ -4,7 +4,7 @@
   "description": "A Bitcoin testnet4 node in a browser tab: bootstrap a UTXO set from a torrented / Core assumeUTXO snapshot, validate blocks forward, follow the chain, and live-sync headers over a WS-to-TCP bridge.",
   "type": "module",
   "license": "AGPL-3.0-or-later",
-  "homepage": "https://bitcoin-kernel.github.io/browser-node/",
+  "homepage": "http://bitcoin-kernel.com/browser-node/",
   "repository": { "type": "git", "url": "https://github.com/bitcoin-kernel/browser-node" },
   "scripts": {
     "serve": "node serve.mjs",

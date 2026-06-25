@@ -3,7 +3,7 @@ name: bitcoin-kernel/browser-node
 version: 0.0.1
 description: A Bitcoin testnet4 node's validation core running in a browser tab.
 network: testnet4
-homepage: https://bitcoin-kernel.github.io/browser-node/
+homepage: http://bitcoin-kernel.com/browser-node/
 license: AGPL-3.0-or-later
 machine_readable_manifest: ./manifest.json
 agent_guide: ./AGENTS.md
@@ -28,7 +28,7 @@ each block to the UTXO set, and live-sync the header chain from a real peer over
 bridge — all in the tab. The pure-JS consensus engine ([`@bitcoin-desktop/schema`](https://github.com/bitcoin-desktop/schema))
 and the browser-node design ([`bitcoin-kernel/node`](https://github.com/bitcoin-kernel/node)) do the work.
 
-▶ **Live demo:** https://bitcoin-kernel.github.io/browser-node/ (use buttons ③ ④ ⑥; ① ⑤ need a local server)
+▶ **Live demo:** http://bitcoin-kernel.com/browser-node/ (use buttons ③ ④ ⑥; ① ⑤ need a local server)
 
 > Status: demo / proof-of-concept. Machine-readable manifest: [`manifest.json`](./manifest.json). Agent guide: [`AGENTS.md`](./AGENTS.md).
 
@@ -48,7 +48,7 @@ local server — see below.
 ## Run it
 
 ### On GitHub Pages (no install)
-Open https://bitcoin-kernel.github.io/browser-node/ and click ③, ④, ⑥.
+Open http://bitcoin-kernel.com/browser-node/ and click ③, ④, ⑥.
 
 ### Locally
 ```sh

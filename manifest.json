@@ -2,7 +2,7 @@
   "name": "bitcoin-kernel/browser-node",
   "version": "0.0.1",
   "description": "A Bitcoin testnet4 node's validation core running in a browser tab: bootstrap a UTXO set from a torrented or Bitcoin Core assumeUTXO snapshot, validate blocks forward, follow the chain, and live-sync the header chain over a WebSocket-to-TCP bridge.",
-  "homepage": "https://bitcoin-kernel.github.io/browser-node/",
+  "homepage": "http://bitcoin-kernel.com/browser-node/",
   "repository": "https://github.com/bitcoin-kernel/browser-node",
   "network": "testnet4",
   "license": "AGPL-3.0-or-later",
@@ -61,7 +61,7 @@
     { "name": "bridge", "cmd": "node bridge.mjs", "port": 8334, "deps": ["ws"],         "for": "act ⑤ WebSocket-to-TCP relay to a testnet4 peer (env: PEER_HOST, PEER_PORT, WS_PORT)" }
   ],
   "run": {
-    "github_pages": "Open https://bitcoin-kernel.github.io/browser-node/ and use buttons ③ ④ ⑥ (acts ① ⑤ need a local server).",
+    "github_pages": "Open http://bitcoin-kernel.com/browser-node/ and use buttons ③ ④ ⑥ (acts ① ⑤ need a local server).",
     "local_static": ["node serve.mjs", "open http://localhost:8088"],
     "local_act1": ["node tools/gen-snapshot.mjs 250000 snapshot.ndjson", "node serve.mjs &", "npm install", "node seed.mjs"],
     "local_act5": ["npm install", "have a testnet4 node listening on :48333", "node bridge.mjs", "click ⑤"],

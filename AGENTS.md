@@ -41,4 +41,4 @@ node serve.mjs           # http://localhost:8088 ; acts ②③④⑥ work with n
 
 ## Hosting
 GitHub Pages serves the `gh-pages` branch root (`.nojekyll` is present). The default branch is
-`gh-pages`. Pages URL: https://bitcoin-kernel.github.io/browser-node/.
+`gh-pages`. Pages URL: http://bitcoin-kernel.com/browser-node/.
