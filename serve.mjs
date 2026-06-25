@@ -11,7 +11,7 @@ const DIR = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 8088);
 const TYPES = { '.html':'text/html', '.js':'text/javascript', '.mjs':'text/javascript', '.json':'application/json',
   '.jsonld':'application/json', '.ndjson':'application/x-ndjson', '.dat':'application/octet-stream',
-  '.hex':'text/plain', '.txt':'text/plain', '.map':'application/json', '.css':'text/css' };
+  '.hex':'text/plain', '.txt':'text/plain', '.map':'application/json', '.css':'text/css', '.wasm':'application/wasm' };
 
 http.createServer((req, res) => {
   const name = decodeURIComponent(req.url.split('?')[0]).replace(/^\/+/, '') || 'index.html';

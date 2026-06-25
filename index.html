@@ -83,6 +83,14 @@ checkpoint it, then <b>resume it from disk on reload</b> — no re-parsing. This
 </p>
 <div id="ckptresult" class="dim">— not run yet —</div>
 
+<h2>⑦ WASM signature verification</h2>
+<p class="dim">Signature verification is the bottleneck for inscription-flood blocks (~14k sigs each). The engine's
+default is pure-JS secp256k1; this swaps in a <b>WASM libsecp256k1</b> backend via the engine's
+<code>setVerifyBackend</code> hook. Gated by a consensus check: WASM must agree with pure-JS on every verdict —
+you don't swap consensus crypto on faith.</p>
+<p><button id="wasm">⑨ Benchmark secp: pure-JS vs WASM (block #26000)</button></p>
+<div id="wasmresult" class="dim">— not run yet —</div>
+
 <script type="module">
 import WebTorrent from './webtorrent.min.js';
 import { ShardedUtxo } from './sharded-utxo-browser.js';
@@ -91,6 +99,7 @@ import { followChain } from './follow-chain.js';
 import { connect as liveConnect, syncToTip, tail } from './live-feed.js';
 import { DumpReader, parseHeader, coins } from './dumptxoutset.js';
 import { checkpoint, resume, checkpointInfo, opfsAvailable as opfsCoins } from './opfs-coins-store.js';
+import { setVerifyBackend } from './engine/codec/secp256k1.js';
 
 const $log = document.getElementById('log'), $bar = document.querySelector('#bar>i'), $stats = document.getElementById('stats');
 const log = (m, c='') => { const t = new Date().toISOString().slice(11,19); $log.innerHTML += `<span class="dim">${t}</span> <span class="${c}">${m}</span>\n`; $log.scrollTop = $log.scrollHeight; };
@@ -355,7 +364,39 @@ document.getElementById('resume').onclick = async () => {
   btn.disabled = false;
 };
 
-log('ready. ① torrent UTXO → ③ validate → ④ follow → ⑤ live feed (OPFS) → ⑥ parse Core snapshot → ⑦⑧ persist UTXO (OPFS).', 'ok');
+// ── Path ⑨: WASM secp benchmark — pure-JS vs WASM, gated by verdict equivalence ──
+document.getElementById('wasm').onclick = async () => {
+  const btn = document.getElementById('wasm'); btn.disabled = true;
+  const $r = document.getElementById('wasmresult');
+  try {
+    log('— WASM secp benchmark —', 'ok');
+    const { codec, be } = await loadEngine(log);
+    const { coinview } = await loadCoinView('data/snapshot-26000.ndjson', log);
+    const block = codec.decode('Block', (await (await fetch('data/block-26000.hex')).text()).trim());
+    const sigs = 28, N = 20;
+    const bench = () => { const t0 = performance.now(); let pass = 0; for (let i = 0; i < N; i++) { const res = be.validateBlockContext(block, { height: 26000, utxo: coinview }).results; if (res.every(x => x.ok !== false)) pass++; } return { ms: (performance.now() - t0) / N, pass }; };
+    setVerifyBackend(null); bench();            // pure-JS, warm
+    const js = bench();
+    log('loading secp256k1.wasm (1.2 MB)…');
+    const { wasmBackend } = await import('./wasm-secp.js');   // top-level await instantiates the wasm
+    setVerifyBackend(wasmBackend); bench();      // WASM, warm
+    const wa = bench();
+    setVerifyBackend(null);                      // reset so other acts use the default
+    const vps = (ms) => Math.round(sigs / (ms / 1000));
+    const speedup = (js.ms / wa.ms).toFixed(1);
+    const equiv = js.pass === N && wa.pass === N;
+    $r.innerHTML = `<table>
+      <tr><td>block</td><td class="n">#26000</td><td class="dim">${sigs} ECDSA sigs · ${N}× each</td></tr>
+      <tr><td>pure-JS secp</td><td class="n">${js.ms.toFixed(1)} ms</td><td class="dim">≈ ${fmt(vps(js.ms))} verifies/s</td></tr>
+      <tr><td>WASM secp</td><td class="n">${wa.ms.toFixed(1)} ms</td><td class="dim">≈ ${fmt(vps(wa.ms))} verifies/s</td></tr>
+      <tr><td>speedup</td><td class="n">${speedup}×</td><td class="dim">${equiv ? 'verdicts identical ✓' : 'MISMATCH ✗'}</td></tr>
+    </table><p class="${equiv ? 'ok' : 'err'}">${equiv ? `✅ WASM secp is ${speedup}× faster and agrees with pure-JS on every verdict` : '❌ verdict mismatch — backend rejected'}</p>`;
+    log(`WASM secp ${speedup}× faster, verdicts identical`, equiv ? 'ok' : 'err');
+  } catch (e) { $r.innerHTML = `<span class="err">error: ${e.message}</span>`; log('wasm error: ' + e.message, 'err'); console.error(e); }
+  btn.disabled = false;
+};
+
+log('ready. ① torrent → ③ validate → ④ follow → ⑤ live (OPFS) → ⑥ Core snapshot → ⑦⑧ persist UTXO → ⑨ WASM secp.', 'ok');
 </script>
 </body>
 </html>

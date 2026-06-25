@@ -61,6 +61,14 @@
       "modules": ["opfs-coins-store.js", "sharded-utxo-browser.js", "dumptxoutset.js"],
       "data": ["data/utxo-prefix.dat"],
       "verified": { "browser": "16,913 coins -> 2.5 MB OPFS checkpoint (17ms); reload resumes all 16,913 coins in 11ms with lookups hitting" }
+    },
+    {
+      "id": 9, "name": "WASM signature verification", "ui": ["⑨"],
+      "proves": "A WASM libsecp256k1 backend (tiny-secp256k1's wasm) is swapped into the engine via setVerifyBackend(), faster than the default pure-JS secp and gated by a verdict-equivalence check.",
+      "runs_on": "github-pages", "requires": [],
+      "modules": ["wasm-secp.js", "secp256k1.wasm", "engine/codec/secp256k1.js"],
+      "data": ["data/block-26000.hex", "data/snapshot-26000.ndjson"],
+      "verified": { "browser": "block #26000: pure-JS ~1,161 verifies/s vs WASM ~4,895 verifies/s (4.2x at block level), verdicts identical", "node": "wasm-secp-test.mjs: WASM verdicts == pure-JS verdicts on all 9 context rules" }
     }
   ],
   "servers": [
@@ -77,8 +85,7 @@
   },
   "trust_model": "The bridge and torrent/HTTP transports are untrusted: they cannot forge valid blocks or headers because the tab validates everything (PoW, difficulty, scripts, signatures, fees). Their only powers are withholding and eclipsing. assumeUTXO trusts the snapshot's UTXO set until background validation (not included here) re-derives it from genesis.",
   "remaining": [
-    "Move the persistence into a Web Worker with OPFS sync access handles so multi-GB checkpoints and lookups don't block the UI at full 14.1M-coin scale (the checkpoint model already works main-thread for headers and the UTXO set).",
-    "WASM-secp: a WASM libsecp256k1 backend (engine setVerifyBackend hook) for inscription-flood blocks (~14k signatures each), instead of the default pure-JS secp.",
+    "Move the persistence + validation into a Web Worker with OPFS sync access handles so multi-GB checkpoints and flood-block validation don't block the UI at full 14.1M-coin scale (the checkpoint model and the WASM secp backend already work main-thread).",
     "One continuous pipeline: bootstrap at a tip-height snapshot, then let act ⑤ feed act ④ live (needs a snapshot at the live tip + the scale work above)."
   ]
 }
