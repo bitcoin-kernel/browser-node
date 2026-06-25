@@ -29,6 +29,7 @@ bridge — all in the tab. The pure-JS consensus engine ([`@bitcoin-desktop/sche
 and the browser-node design ([`bitcoin-kernel/node`](https://github.com/bitcoin-kernel/node)) do the work.
 
 ▶ **Live demo:** http://bitcoin-kernel.com/browser-node/ (use buttons ③ ④ ⑥; ① ⑤ need a local server)
+▶ **Run the node (capstone):** http://bitcoin-kernel.com/browser-node/node.html — a live dashboard that runs the whole pipeline (validation works on Pages; live header sync needs the local bridge)
 
 > Status: demo / proof-of-concept. Machine-readable manifest: [`manifest.json`](./manifest.json). Agent guide: [`AGENTS.md`](./AGENTS.md).
 
@@ -83,7 +84,8 @@ npm test   # validate #26000, adversarial tamper, follow 26000–26020, parse + 
 ## Architecture
 
 ```
-index.html              the six acts, wired together
+index.html              the ten acts, explained (the showcase)
+node.html               the capstone: a running-node dashboard (orchestrates the worker + live feed)
 sharded-utxo-browser.js ShardedUtxo — coin view sharded past V8's 16.7M Map cap
 validate-forward.js     load engine + coin view, validate one block forward
 follow-chain.js         applyBlock() + followChain() — validate a run, update the UTXO set
@@ -127,10 +129,10 @@ background re-validation from genesis (not included in this demo) confirms it.
 
 ## Not done yet
 
-- **One continuous pipeline (capstone)** — bootstrap at a tip-height assumeUTXO snapshot, then let the
-  live header feed (⑤) drive forward block validation (④) inside the worker (⑩), tying all acts into one
-  running node. Needs a snapshot at the live tip plus downloading/validating the blocks in between
-  (the WASM secp backend and the worker are already in place).
+- **Reach the actual live tip** — the running-node pipeline is built ([`node.html`](./node.html): live
+  headers + UTXO bootstrap + forward validation in the worker, over a real block range). Validating all
+  the way to the live tip additionally needs an assumeUTXO snapshot *at* a recent height plus validating
+  the inscription-flood blocks between it and the tip — a data + throughput cost, not new code.
 
 ## License & attribution
 

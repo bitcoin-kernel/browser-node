@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>bitcoin-kernel/browser-node — running node (testnet4)</title>
+<style>
+  :root { --bg:#fff; --fg:#16181d; --mut:#5b6470; --bd:#e6e8eb; --pan:#fafbfc; --ac:#e8830c; --ac2:#0969da; --good:#1a7f37; --bad:#cf222e; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; color-scheme:light; }
+  body { background:var(--bg); color:var(--fg); font:14px/1.5 var(--mono); max-width:860px; margin:24px auto; padding:0 16px; }
+  h1 { font-size:18px; } a { color:var(--ac2); }
+  button { background:var(--pan); color:var(--fg); border:1px solid var(--bd); border-radius:6px; padding:9px 16px; cursor:pointer; font:inherit; }
+  button:hover { background:#f0f2f4; border-color:var(--ac); } button:disabled { opacity:.45; cursor:default; }
+  .grid { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin:14px 0; }
+  .card { border:1px solid var(--bd); border-radius:8px; padding:10px 12px; background:var(--pan); }
+  .card .k { color:var(--mut); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+  .card .v { font-size:20px; color:var(--fg); margin-top:3px; }
+  .card .s { color:var(--mut); font-size:12px; }
+  #status { border:1px solid var(--bd); border-radius:6px; padding:8px 12px; background:var(--pan); }
+  #log { background:var(--pan); border:1px solid var(--bd); border-radius:6px; padding:12px; height:170px; overflow:auto; white-space:pre-wrap; margin-top:12px; }
+  .ok{color:var(--good)} .warn{color:var(--ac)} .err{color:var(--bad)} .dim{color:var(--mut)}
+  .dot{ display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--mut); margin-right:6px; vertical-align:middle; }
+  .dot.live{ background:var(--good); }
+</style>
+</head>
+<body>
+<h1>bitcoin-kernel / browser-node — running node <span class="dim">(testnet4)</span></h1>
+<p class="dim">The capstone: one continuous pipeline. Headers stream from a real peer over the bridge; the UTXO set is
+bootstrapped from a snapshot; blocks are validated forward and applied — the engine, WASM secp, UTXO set and OPFS
+persistence all run in a <b>Web Worker</b>. <a href="index.html">← the ten acts, explained</a></p>
+
+<p><button id="start">▶ Start node</button> <span id="status" class="dim">idle</span></p>
+
+<div class="grid">
+  <div class="card"><div class="k">network</div><div class="v">testnet4</div><div class="s" id="engine">engine: idle</div></div>
+  <div class="card"><div class="k"><span class="dot" id="hdot"></span>header tip (live)</div><div class="v" id="htip">—</div><div class="s" id="hsub">via WS↔TCP bridge</div></div>
+  <div class="card"><div class="k">validated height</div><div class="v" id="vheight">—</div><div class="s" id="vsub">full consensus, in worker</div></div>
+  <div class="card"><div class="k">UTXO set</div><div class="v" id="utxo">—</div><div class="s">RAM, checkpointed to OPFS</div></div>
+  <div class="card"><div class="k">blocks validated</div><div class="v" id="nblocks">0</div><div class="s" id="bps"></div></div>
+  <div class="card"><div class="k">persistence</div><div class="v" id="ckpt">—</div><div class="s">OPFS sync access handle</div></div>
+</div>
+<div id="log"></div>
+
+<p class="dim" style="margin-top:14px; border-top:1px solid var(--bd); padding-top:10px">
+Honest scope: this runs the node's real loop over a bounded range of real testnet4 blocks. Reaching the actual
+live tip additionally needs an assumeUTXO snapshot <i>at</i> a recent height plus validating the blocks between it
+and the tip (the inscription-flood era) — a data/throughput cost, not new code. Header sync needs the local bridge
+(<code>node bridge.mjs</code>); without it the validation pipeline still runs.</p>
+
+<script type="module">
+import { connect as liveConnect, syncToTip } from './live-feed.js';
+
+const $ = (id) => document.getElementById(id);
+const log = (m, c='') => { const t = new Date().toISOString().slice(11,19); $('log').innerHTML += `<span class="dim">${t}</span> <span class="${c}">${m}</span>\n`; $('log').scrollTop = $('log').scrollHeight; };
+const fmt = (n) => Number(n).toLocaleString();
+const setStatus = (m, c='') => $('status').innerHTML = `<span class="${c}">${m}</span>`;
+
+// ── worker RPC with progress events ──
+let _w = null, _id = 0; const _rpc = new Map(); let _onProgress = null;
+function wcall(cmd) {
+  if (!_w) {
+    _w = new Worker('node-worker.js', { type: 'module' });
+    _w.onmessage = (e) => { const d = e.data; if (d.progress) { _onProgress && _onProgress(d); return; } const p = _rpc.get(d.id); if (!p) return; _rpc.delete(d.id); d.ok ? p.resolve(d.result) : p.reject(new Error(d.error)); };
+    _w.onerror = (e) => log('worker error: ' + (e.message || e.filename), 'err');
+  }
+  const id = ++_id; _w.postMessage({ id, cmd });
+  return new Promise((res, rej) => _rpc.set(id, { resolve: res, reject: rej }));
+}
+
+// ── live header feed (main thread; optional — needs the bridge) ──
+async function runHeaderFeed() {
+  try {
+    const jl = (n) => fetch(`./engine/schema/${n}.jsonld`).then(r => r.json());
+    const [core, proof, p2p, chain, validate] = await Promise.all(['core','proof','p2p','chain','validate'].map(jl));
+    const vectors = await (await fetch('./data/testnet4.json')).json();
+    log('connecting header feed to the bridge…');
+    const session = await liveConnect({ bridgeUrl: 'ws://localhost:8334', schemas: { core, proof, p2p, chain, validate }, vectors, log, persist: true });
+    if (session.resumedFrom) $('htip').textContent = '#' + fmt(session.resumedFrom);
+    await syncToTip(session, { onBatch: ({ tip }) => { $('htip').textContent = '#' + fmt(tip.height); } });
+    const tip = session.store.tip();
+    $('hdot').classList.add('live'); $('htip').textContent = '#' + fmt(tip.height); $('hsub').textContent = 'synced + validated, live';
+    log(`header tip: #${fmt(tip.height)} (validated from genesis)`, 'ok');
+  } catch (e) {
+    $('htip').textContent = 'offline'; $('hsub').innerHTML = '<span class="warn">run node bridge.mjs</span>';
+    log('header feed: ' + e.message + ' — bridge offline; validation pipeline still runs', 'warn');
+  }
+}
+
+// ── the node loop ──
+$('start').onclick = async () => {
+  $('start').disabled = true;
+  try {
+    setStatus('starting worker…');
+    log('— starting node —', 'ok');
+    $('engine').textContent = 'loading engine + WASM secp in worker…';
+    await wcall('init');
+    $('engine').innerHTML = 'engine + <b>WASM secp</b> · in worker';
+    log('worker ready: engine + WASM secp loaded off the main thread', 'ok');
+
+    runHeaderFeed();   // parallel, non-blocking
+
+    setStatus('bootstrapping UTXO + validating forward…', 'warn');
+    let n = 0; const t0 = performance.now();
+    _onProgress = (b) => {
+      n++;
+      $('vheight').textContent = '#' + fmt(b.height);
+      $('utxo').textContent = fmt(b.utxoSize) + ' coins';
+      $('nblocks').textContent = fmt(n);
+      $('bps').textContent = (n / ((performance.now() - t0) / 1000)).toFixed(0) + ' blocks/s';
+    };
+    const r = await wcall('followRange');
+    _onProgress = null;
+    $('vheight').textContent = '#' + fmt(r.end);
+    log(`validated forward #${fmt(r.start)}→#${fmt(r.end)}: ${fmt(r.validated)}/${fmt(r.total)} blocks, UTXO ${fmt(r.utxoStart)}→${fmt(r.utxoEnd)} in ${r.ms.toFixed(0)}ms (worker, WASM secp)`, 'ok');
+
+    const ck = await wcall('checkpoint');
+    $('ckpt').textContent = (ck.bytes/1048576).toFixed(2) + ' MB';
+    log(`UTXO set checkpointed to OPFS (${(ck.bytes/1048576).toFixed(2)} MB, sync access handle)`, 'ok');
+
+    setStatus(`● running — fully validated to #${fmt(r.end)}; watching the tip`, 'ok');
+    log('node running. Headers live from the network; UTXO bootstrapped + validated forward in the worker.', 'ok');
+  } catch (e) { setStatus('error: ' + e.message, 'err'); log('node error: ' + e.message, 'err'); console.error(e); $('start').disabled = false; }
+};
+
+log('idle — press ▶ Start node.', 'dim');
+</script>
+</body>
+</html>

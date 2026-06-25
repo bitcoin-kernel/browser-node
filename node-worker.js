@@ -30,8 +30,9 @@ async function followRange() {
   const start = snap.size;
   const range = await (await fetch('data/range.json')).json();
   const t0 = performance.now();
-  const r = await followChain({ range, codec, be, snap, coinview: coinviewOf(snap) });
-  return { validated: r.validated, total: r.total, utxoStart: start, utxoEnd: snap.size, ms: performance.now() - t0 };
+  const r = await followChain({ range, codec, be, snap, coinview: coinviewOf(snap),
+    onBlock: (b) => self.postMessage({ progress: 'block', height: b.height, ok: b.ok, txs: b.txs, inputs: b.inputs, utxoSize: b.utxoSize, ms: b.ms }) });
+  return { validated: r.validated, total: r.total, utxoStart: start, utxoEnd: snap.size, start: range.start, end: range.end, ms: performance.now() - t0 };
 }
 
 // Checkpoint the coin view via an OPFS *synchronous access handle* (Worker-only).

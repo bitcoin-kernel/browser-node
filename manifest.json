@@ -4,6 +4,7 @@
   "description": "A Bitcoin testnet4 node's validation core running in a browser tab: bootstrap a UTXO set from a torrented or Bitcoin Core assumeUTXO snapshot, validate blocks forward, follow the chain, and live-sync the header chain over a WebSocket-to-TCP bridge.",
   "homepage": "http://bitcoin-kernel.com/browser-node/",
   "repository": "https://github.com/bitcoin-kernel/browser-node",
+  "pages": { "showcase": "index.html — the ten acts, explained", "node": "node.html — the running-node dashboard (capstone): live headers + bootstrap + forward validation in a worker" },
   "network": "testnet4",
   "license": "AGPL-3.0-or-later",
   "status": "demo",
@@ -93,6 +94,6 @@
   },
   "trust_model": "The bridge and torrent/HTTP transports are untrusted: they cannot forge valid blocks or headers because the tab validates everything (PoW, difficulty, scripts, signatures, fees). Their only powers are withholding and eclipsing. assumeUTXO trusts the snapshot's UTXO set until background validation (not included here) re-derives it from genesis.",
   "remaining": [
-    "Capstone — one continuous pipeline: bootstrap at a tip-height assumeUTXO snapshot, then let the live header feed (⑤) drive forward block validation (④) inside the worker (⑩), tying all acts into one running node. Needs a snapshot at the live tip plus downloading/validating the blocks between it and the tip (WASM secp + worker already in place)."
+    "Reach the actual live tip: the running-node pipeline is built (node.html — live header feed + UTXO bootstrap + forward validation in the worker, over a real block range). Validating all the way to the live tip additionally needs an assumeUTXO snapshot AT a recent height plus validating the inscription-flood blocks between it and the tip — a data + throughput cost, not new code."
   ]
 }
