@@ -41,6 +41,7 @@ and the browser-node design ([`bitcoin-kernel/node`](https://github.com/bitcoin-
 | ④ | **Follow the chain** | consecutive blocks validated, applying UTXO updates so later blocks spend earlier outputs; linkage checked | **GitHub Pages** | blocks 26000–26020, UTXO 249→1,361, 1.1s |
 | ⑤ | **Live feed over a WS↔TCP bridge** | the tab speaks p2p over a bridge to a real peer, syncs + fully validates the header chain (PoW, BIP94, reorg), tails the tip, and persists to **OPFS** | local server | 141,671 headers genesis→tip in 5.8s; reload **resumes from OPFS in 1.7s** |
 | ⑥ | **Parse Core's `dumptxoutset` snapshot** | Core's real assumeUTXO snapshot (v2 compressed format) parsed in-tab and used as a validating coin view | **GitHub Pages** | full 811 MB file → 13,870,119 coins, 40/40 match `gettxout`; block #120001 validated, 85ms |
+| ⑦ | **Persist the UTXO set (OPFS)** | the RAM-resident coin view is checkpointed to OPFS and resumes from disk on reload | **GitHub Pages** | 16,913 coins → 2.5 MB checkpoint (17ms); reload resumes in 11ms |
 
 Acts ③ ④ ⑥ are fully static and work on GitHub Pages. Acts ① (torrent seeding) and ⑤ (the bridge) need a
 local server — see below.
@@ -87,6 +88,7 @@ follow-chain.js         applyBlock() + followChain() — validate a run, update 
 dumptxoutset.js         parser for Bitcoin Core's dumptxoutset v2 compressed snapshot format
 live-feed.js            connect + syncToTip + tail (header sync over the bridge)
 opfs-header-store.js    persist the header chain to OPFS (main-thread async) — resume on reload
+opfs-coins-store.js     checkpoint the UTXO set (ShardedUtxo) to OPFS — resume on reload
 peer-ws.js              WsPeer — Bitcoin p2p over a WebSocket (browser transport)
 engine/                 vendored @bitcoin-desktop/schema: consensus engine + schemas + stores
 serve.mjs               zero-dep static server (local)
@@ -120,9 +122,11 @@ background re-validation from genesis (not included in this demo) confirms it.
 
 ## Not done yet
 
-- **OPFS persistence for the UTXO set** — the header chain already persists (act ⑤ resumes from OPFS via `opfs-header-store.js`); the coin view / block store are still in-memory.
-- **WASM-secp + full scale** — a WASM libsecp256k1 backend for inscription-flood blocks (~14k sigs)
-  and holding the full 14.1M-coin (~3.2 GB) UTXO set in a tab.
+- **Non-blocking persistence at scale** — headers (⑤) and the UTXO set (⑦⑧) both persist to OPFS and
+  resume on reload; moving the store into a Web Worker with sync access handles would keep multi-GB
+  checkpoints and lookups off the UI thread at the full 14.1M-coin scale.
+- **WASM-secp** — a WASM libsecp256k1 backend (engine `setVerifyBackend` hook) for inscription-flood
+  blocks (~14k sigs each), instead of the default pure-JS secp.
 - **One continuous pipeline** — bootstrap at a tip-height snapshot, then let ⑤ feed ④ live.
 
 ## License & attribution

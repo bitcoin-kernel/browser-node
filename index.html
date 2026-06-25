@@ -72,6 +72,17 @@ ultimate parser proof: real signatures only verify if every decompressed amount 
 <p><button id="snap">⑥ Parse Core snapshot → validate #120001</button></p>
 <div id="snapresult" class="dim">— not run yet —</div>
 
+<h2>⑥ Persist the UTXO set — OPFS checkpoint</h2>
+<p class="dim">The coin view lives in RAM (fast synchronous lookups), and is <b>checkpointed to OPFS</b> — the same model
+Bitcoin Core uses (flush the chainstate periodically, not every block). Build a coin view from the Core snapshot,
+checkpoint it, then <b>resume it from disk on reload</b> — no re-parsing. This is UTXO-set persistence; at full
+14M-coin scale the same code moves into a Web Worker with sync access handles (see README).</p>
+<p>
+  <button id="ckpt">⑦ Build + checkpoint UTXO to OPFS</button>
+  <button id="resume">⑧ Resume UTXO from OPFS</button>
+</p>
+<div id="ckptresult" class="dim">— not run yet —</div>
+
 <script type="module">
 import WebTorrent from './webtorrent.min.js';
 import { ShardedUtxo } from './sharded-utxo-browser.js';
@@ -79,6 +90,7 @@ import { loadEngine, loadCoinView, validateForward, coinviewOf } from './validat
 import { followChain } from './follow-chain.js';
 import { connect as liveConnect, syncToTip, tail } from './live-feed.js';
 import { DumpReader, parseHeader, coins } from './dumptxoutset.js';
+import { checkpoint, resume, checkpointInfo, opfsAvailable as opfsCoins } from './opfs-coins-store.js';
 
 const $log = document.getElementById('log'), $bar = document.querySelector('#bar>i'), $stats = document.getElementById('stats');
 const log = (m, c='') => { const t = new Date().toISOString().slice(11,19); $log.innerHTML += `<span class="dim">${t}</span> <span class="${c}">${m}</span>\n`; $log.scrollTop = $log.scrollHeight; };
@@ -288,7 +300,62 @@ document.getElementById('snap').onclick = async () => {
   btn.disabled = false;
 };
 
-log('ready. ① torrent UTXO → ③ validate a block → ④ follow a run → ⑤ live feed → ⑥ parse Core snapshot + validate.', 'ok');
+// ── Path ⑦/⑧: persist the UTXO set to OPFS (checkpoint) and resume it ──
+const CKPT = 'utxo-checkpoint.ndjson';
+function buildCoinViewFromPrefix(bytes) {
+  const r = new DumpReader(bytes); const hdr = parseHeader(r);
+  const snap = new ShardedUtxo(64);
+  for (const c of coins(r)) snap.set(`${c.txid}:${c.vout}`, `${c.value}\t${c.scriptPubKey}\t${c.height}\t${c.coinbase?1:0}`);
+  return { snap, hdr };
+}
+document.getElementById('ckpt').onclick = async () => {
+  const btn = document.getElementById('ckpt'); btn.disabled = true;
+  const $r = document.getElementById('ckptresult');
+  try {
+    if (!opfsCoins()) { $r.innerHTML = '<span class="err">OPFS not available in this browser</span>'; btn.disabled = false; return; }
+    log('— checkpoint UTXO set to OPFS —', 'ok');
+    log('building a coin view from the Core snapshot prefix…');
+    const bytes = new Uint8Array(await (await fetch('data/utxo-prefix.dat')).arrayBuffer());
+    const { snap, hdr } = buildCoinViewFromPrefix(bytes);
+    log(`coin view: ${fmt(snap.size)} coins; writing checkpoint to OPFS…`);
+    const t0 = performance.now();
+    const c = await checkpoint(snap, CKPT, { network: 'testnet4', source: 'core dumptxoutset prefix', base: hdr.baseHash });
+    const ms = performance.now() - t0;
+    const info = await checkpointInfo(CKPT);
+    $r.innerHTML = `<table>
+      <tr><td>coins checkpointed</td><td class="n">${fmt(c)}</td><td class="dim">RAM → OPFS</td></tr>
+      <tr><td>OPFS file</td><td class="n">${(info.bytes/1048576).toFixed(2)} MB</td><td class="dim">${CKPT}</td></tr>
+      <tr><td>write time</td><td class="n">${ms.toFixed(0)} ms</td></tr>
+    </table><p class="ok">✅ UTXO set persisted to OPFS — reload the page and click ⑧ to resume it from disk.</p>`;
+    log(`checkpointed ${fmt(c)} coins to OPFS (${(info.bytes/1048576).toFixed(2)} MB, ${ms.toFixed(0)}ms)`, 'ok');
+  } catch (e) { $r.innerHTML = `<span class="err">error: ${e.message}</span>`; log('checkpoint error: '+e.message, 'err'); console.error(e); }
+  btn.disabled = false;
+};
+document.getElementById('resume').onclick = async () => {
+  const btn = document.getElementById('resume'); btn.disabled = true;
+  const $r = document.getElementById('ckptresult');
+  try {
+    if (!opfsCoins()) { $r.innerHTML = '<span class="err">OPFS not available</span>'; btn.disabled = false; return; }
+    log('— resume UTXO set from OPFS —', 'ok');
+    const snap = new ShardedUtxo(64);
+    const t0 = performance.now();
+    const meta = await resume(snap, CKPT);
+    if (!meta) { $r.innerHTML = '<span class="warn">no OPFS checkpoint yet — click ⑦ first</span>'; log('no checkpoint found — run ⑦', 'warn'); btn.disabled = false; return; }
+    const ms = performance.now() - t0;
+    // prove it is a live, queryable coin view
+    let sample = null; for (const [k] of snap.entries()) { sample = k; break; }
+    const hit = sample ? !!snap.get(sample) : false;
+    $r.innerHTML = `<table>
+      <tr><td>resumed from OPFS</td><td class="n">${fmt(snap.size)} coins</td><td class="dim">${meta.source||''}</td></tr>
+      <tr><td>resume time</td><td class="n">${ms.toFixed(0)} ms</td><td class="dim">no re-parse of the snapshot</td></tr>
+      <tr><td>prevout lookup</td><td class="n">${hit?'✓ hit':'✗'}</td><td class="dim">${sample?sample.slice(0,18)+'…':''}</td></tr>
+    </table><p class="ok">✅ UTXO set restored from OPFS — survives reloads.</p>`;
+    log(`resumed ${fmt(snap.size)} coins from OPFS in ${ms.toFixed(0)}ms`, 'ok');
+  } catch (e) { $r.innerHTML = `<span class="err">error: ${e.message}</span>`; log('resume error: '+e.message, 'err'); console.error(e); }
+  btn.disabled = false;
+};
+
+log('ready. ① torrent UTXO → ③ validate → ④ follow → ⑤ live feed (OPFS) → ⑥ parse Core snapshot → ⑦⑧ persist UTXO (OPFS).', 'ok');
 </script>
 </body>
 </html>

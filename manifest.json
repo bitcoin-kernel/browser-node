@@ -53,6 +53,14 @@
         "parser_node": "full 811 MB file: all 13,870,119 coins parsed to clean EOF; 40/40 sampled coins match bitcoind gettxout (value + scriptPubKey); 7 P2PK-uncompressed of 13.87M",
         "browser": "prefix parsed in-tab + block #120001 validated forward against it (52 txs, 85ms)"
       }
+    },
+    {
+      "id": 7, "name": "Persist the UTXO set (OPFS checkpoint)", "ui": ["⑦", "⑧"],
+      "proves": "The RAM-resident coin view (ShardedUtxo) is checkpointed to OPFS (the model Bitcoin Core uses for the chainstate) and resumes from disk on reload — no re-parse.",
+      "runs_on": "github-pages", "requires": [],
+      "modules": ["opfs-coins-store.js", "sharded-utxo-browser.js", "dumptxoutset.js"],
+      "data": ["data/utxo-prefix.dat"],
+      "verified": { "browser": "16,913 coins -> 2.5 MB OPFS checkpoint (17ms); reload resumes all 16,913 coins in 11ms with lookups hitting" }
     }
   ],
   "servers": [
@@ -69,8 +77,8 @@
   },
   "trust_model": "The bridge and torrent/HTTP transports are untrusted: they cannot forge valid blocks or headers because the tab validates everything (PoW, difficulty, scripts, signatures, fees). Their only powers are withholding and eclipsing. assumeUTXO trusts the snapshot's UTXO set until background validation (not included here) re-derives it from genesis.",
   "remaining": [
-    "OPFS persistence for the UTXO set / block store (the header chain already persists via opfs-header-store.js — act ⑤ resumes from OPFS).",
-    "WASM-secp + full scale: a WASM libsecp256k1 backend for inscription-flood blocks (~14k signatures each) and holding the full 14.1M-coin (~3.2 GB) UTXO set in a tab.",
+    "Move the persistence into a Web Worker with OPFS sync access handles so multi-GB checkpoints and lookups don't block the UI at full 14.1M-coin scale (the checkpoint model already works main-thread for headers and the UTXO set).",
+    "WASM-secp: a WASM libsecp256k1 backend (engine setVerifyBackend hook) for inscription-flood blocks (~14k signatures each), instead of the default pure-JS secp.",
     "One continuous pipeline: bootstrap at a tip-height snapshot, then let act ⑤ feed act ④ live (needs a snapshot at the live tip + the scale work above)."
   ]
 }
