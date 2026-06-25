@@ -5,26 +5,27 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>bitcoin-kernel/browser-node — a Bitcoin testnet4 node in a tab</title>
 <style>
-  :root { color-scheme: dark; }
-  body { background:#0d1117; color:#c9d1d9; font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; max-width:860px; margin:24px auto; padding:0 16px; }
-  h1 { font-size:18px; color:#e6edf3; } h2 { font-size:14px; color:#8b949e; margin-top:24px; text-transform:uppercase; letter-spacing:.05em; }
-  button { background:#21262d; color:#c9d1d9; border:1px solid #30363d; border-radius:6px; padding:8px 14px; cursor:pointer; font:inherit; }
-  button:hover { background:#30363d; } button:disabled { opacity:.4; cursor:default; }
-  #log { background:#010409; border:1px solid #30363d; border-radius:6px; padding:12px; height:200px; overflow:auto; white-space:pre-wrap; }
-  .ok{color:#3fb950} .warn{color:#d29922} .err{color:#f85149} .dim{color:#6e7681}
-  table { border-collapse:collapse; margin-top:8px; } td { padding:2px 14px 2px 0; } td.n{ text-align:right; color:#e6edf3; }
-  #bar { height:6px; background:#21262d; border-radius:3px; overflow:hidden; margin:8px 0; }
-  #bar>i { display:block; height:100%; width:0; background:#3fb950; transition:width .2s; }
-  .pill{ display:inline-block; background:#161b22; border:1px solid #30363d; border-radius:999px; padding:1px 8px; font-size:12px; }
+  :root { --bg:#fff; --fg:#16181d; --mut:#5b6470; --bd:#e6e8eb; --pan:#fafbfc; --ac:#e8830c; --ac2:#0969da; --good:#1a7f37; --bad:#cf222e; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; color-scheme:light; }
+  body { background:var(--bg); color:var(--fg); font:14px/1.5 var(--mono); max-width:860px; margin:24px auto; padding:0 16px; }
+  h1 { font-size:18px; color:var(--fg); } h2 { font-size:14px; color:var(--mut); margin-top:24px; text-transform:uppercase; letter-spacing:.05em; }
+  a { color:var(--ac2); }
+  button { background:var(--pan); color:var(--fg); border:1px solid var(--bd); border-radius:6px; padding:8px 14px; cursor:pointer; font:inherit; }
+  button:hover { background:#f0f2f4; border-color:var(--ac); } button:disabled { opacity:.45; cursor:default; }
+  #log { background:var(--pan); border:1px solid var(--bd); border-radius:6px; padding:12px; height:200px; overflow:auto; white-space:pre-wrap; }
+  .ok{color:var(--good)} .warn{color:var(--ac)} .err{color:var(--bad)} .dim{color:var(--mut)}
+  table { border-collapse:collapse; margin-top:8px; } td { padding:2px 14px 2px 0; } td.n{ text-align:right; color:var(--fg); }
+  #bar { height:6px; background:var(--bd); border-radius:3px; overflow:hidden; margin:8px 0; }
+  #bar>i { display:block; height:100%; width:0; background:var(--good); transition:width .2s; }
+  .pill{ display:inline-block; background:var(--pan); border:1px solid var(--bd); border-radius:999px; padding:1px 8px; font-size:12px; }
 </style>
 </head>
 <body>
 <h1>bitcoin-kernel / browser-node — a Bitcoin testnet4 node in a tab</h1>
 <p class="dim">Bootstrap a UTXO set from a torrented or Bitcoin Core <i>assumeUTXO</i> snapshot, validate blocks
 forward, follow the chain, and live-sync headers — all in this tab, on the <code>bitcoin-kernel</code> engine.</p>
-<p class="dim" style="border:1px solid #30363d;border-radius:6px;padding:8px 12px">
+<p class="dim" style="border:1px solid var(--bd);background:var(--pan);border-radius:6px;padding:8px 12px">
 <b>Acts ③ ④ ⑥ work here on GitHub Pages.</b> Acts ① (WebTorrent seeding) and ⑤ (the live p2p bridge) need a
-local server — see the <a href="https://github.com/bitcoin-kernel/browser-node#run-it" style="color:#58a6ff">README</a>.</p>
+local server — see the <a href="https://github.com/bitcoin-kernel/browser-node#run-it">README</a>.</p>
 
 <p>
   <button id="go">① Load snapshot via WebTorrent</button>
