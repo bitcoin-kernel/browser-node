@@ -37,11 +37,11 @@
     },
     {
       "id": 5, "name": "Live feed over a WS-to-TCP bridge", "ui": ["⑤"],
-      "proves": "The tab speaks the Bitcoin p2p protocol over a WebSocket bridge to a real testnet4 peer, syncs the whole header chain from genesis, fully validates every header (PoW, BIP94 difficulty, linkage, most-work reorg), and tails the live tip.",
+      "proves": "The tab speaks the Bitcoin p2p protocol over a WebSocket bridge to a real testnet4 peer, syncs the whole header chain from genesis, fully validates every header (PoW, BIP94 difficulty, linkage, most-work reorg), and tails the live tip. The chain is persisted to OPFS and resumes across reloads.",
       "runs_on": "local-server", "requires": ["bridge.mjs (ws)", "a testnet4 peer (e.g. bitcoind on :48333)"],
-      "modules": ["live-feed.js", "peer-ws.js", "engine/chain/header-sync.js", "engine/store/header-store.js", "engine/codec/p2p.js", "engine/codec/headers.js"],
+      "modules": ["live-feed.js", "peer-ws.js", "opfs-header-store.js", "engine/chain/header-sync.js", "engine/store/header-store.js", "engine/codec/p2p.js", "engine/codec/headers.js"],
       "data": ["data/testnet4.json"],
-      "verified": { "browser": "141,669 headers genesis->tip validated in 4.7s", "node": "5.1s, 0 reorgs" }
+      "verified": { "browser": "141,671 headers genesis->tip validated in 5.8s", "node": "5.1s, 0 reorgs", "opfs_resume": "reload resumes 141,671 headers from OPFS in 1.7s (no re-download / re-validation)" }
     },
     {
       "id": 6, "name": "Parse Core's dumptxoutset snapshot", "ui": ["⑥"],
@@ -69,7 +69,7 @@
   },
   "trust_model": "The bridge and torrent/HTTP transports are untrusted: they cannot forge valid blocks or headers because the tab validates everything (PoW, difficulty, scripts, signatures, fees). Their only powers are withholding and eclipsing. assumeUTXO trusts the snapshot's UTXO set until background validation (not included here) re-derives it from genesis.",
   "remaining": [
-    "OPFS persistence: swap MemoryHeaderStore / in-memory UTXO for the upstream OPFS stores so state survives reloads.",
+    "OPFS persistence for the UTXO set / block store (the header chain already persists via opfs-header-store.js — act ⑤ resumes from OPFS).",
     "WASM-secp + full scale: a WASM libsecp256k1 backend for inscription-flood blocks (~14k signatures each) and holding the full 14.1M-coin (~3.2 GB) UTXO set in a tab.",
     "One continuous pipeline: bootstrap at a tip-height snapshot, then let act ⑤ feed act ④ live (needs a snapshot at the live tip + the scale work above)."
   ]

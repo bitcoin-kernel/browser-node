@@ -58,7 +58,8 @@ created earlier <i>in the run</i>, so it only works if the apply step is correct
 thin local <span class="pill">bridge</span> that relays frames to a real testnet4 peer (here, our own synced node).
 The tab does the version/verack handshake, syncs the <b>whole header chain from genesis</b>, and fully validates
 every header (PoW, BIP94 difficulty, linkage, most-work reorg) — then tails the live tip. The bridge is untrusted:
-it can't forge a valid header.</p>
+it can't forge a valid header. The chain is <b>persisted to OPFS</b>, so a reload <b>resumes from disk</b> instead of
+re-syncing from genesis.</p>
 <p><button id="live">⑤ Connect &amp; sync live</button></p>
 <div id="livestatus" class="dim">— not connected —</div>
 <div id="livetip"></div>
@@ -230,16 +231,18 @@ document.getElementById('live').onclick = async () => {
     const [core, proof, p2p, chain, validate] = await Promise.all(['core','proof','p2p','chain','validate'].map(jl));
     const vectors = await (await fetch('./data/testnet4.json')).json();
     const t0 = performance.now();
-    const session = await liveConnect({ bridgeUrl: 'ws://localhost:8334', schemas: { core, proof, p2p, chain, validate }, vectors, log });
-    $s.innerHTML = '<span class="ok">handshake ok</span> — syncing header chain from genesis…';
+    const session = await liveConnect({ bridgeUrl: 'ws://localhost:8334', schemas: { core, proof, p2p, chain, validate }, vectors, log, persist: true });
+    const resumed = session.resumedFrom;
+    $s.innerHTML = `<span class="ok">handshake ok</span> — ${resumed ? `resumed ${fmt(resumed)} headers from OPFS, syncing new…` : 'syncing header chain from genesis…'}`;
     await syncToTip(session, { onBatch: ({ tip, reorg }) => {
       if (reorg) log(`reorg: rolled back ${reorg.depth} at height ${fmt(reorg.atHeight)}`, 'warn');
       $s.innerHTML = `syncing… validated to height <b>${fmt(tip.height)}</b>`;
     }});
     const tip = session.store.tip();
     const secs = ((performance.now()-t0)/1000).toFixed(1);
-    $s.innerHTML = `<span class="ok">✅ synced + validated ${fmt(tip.height)} headers from genesis in ${secs}s</span> · tip <span class="dim">${tip.hash.slice(0,24)}…</span><br><span class="dim">watching for new blocks (live tail)…</span>`;
-    log(`live: ${fmt(tip.height)} headers validated over the bridge in ${secs}s`, 'ok');
+    const how = session.persisted ? (resumed ? `resumed ${fmt(resumed)} from OPFS + synced to` : `synced from genesis + persisted to OPFS:`) : 'synced from genesis:';
+    $s.innerHTML = `<span class="ok">✅ ${how} ${fmt(tip.height)} headers in ${secs}s</span> · tip <span class="dim">${tip.hash.slice(0,24)}…</span><br><span class="dim">${session.persisted ? 'chain saved to OPFS — reload the page and click ⑤ to resume. ' : ''}watching for new blocks (live tail)…</span>`;
+    log(`live: ${fmt(tip.height)} headers in ${secs}s${session.persisted ? (resumed ? ` (resumed ${fmt(resumed)} from OPFS)` : ' (persisted to OPFS)') : ''}`, 'ok');
     $t.innerHTML = `<table><tr class="dim"><td>live tip</td><td class="n">#${fmt(tip.height)}</td><td class="dim">${tip.hash.slice(0,20)}…</td></tr></table>`;
     liveStop = tail(session, { intervalMs: 8000, log, onTip: (t) => {
       log(`new block #${fmt(t.height)} ${t.hash.slice(0,16)}… (+${t.added})`, 'ok');

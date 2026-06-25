@@ -39,7 +39,7 @@ and the browser-node design ([`bitcoin-kernel/node`](https://github.com/bitcoin-
 | ① | **Bootstrap UTXO from a torrented snapshot** | a snapshot fetched over WebTorrent/HTTP streams into a sharded coin view | local server | 250k coins in 0.11s; full scale 14.1M = 3.23 GB / 9.7s |
 | ③ | **Validate a block forward** | one real block fully validated (scripts, BIP143 sigs, fees, maturity, witness commitment) | **GitHub Pages** | block #26000, 16/16 rules, 45ms; rejects a 1‑sat tamper |
 | ④ | **Follow the chain** | consecutive blocks validated, applying UTXO updates so later blocks spend earlier outputs; linkage checked | **GitHub Pages** | blocks 26000–26020, UTXO 249→1,361, 1.1s |
-| ⑤ | **Live feed over a WS↔TCP bridge** | the tab speaks p2p over a bridge to a real peer, syncs + fully validates the header chain (PoW, BIP94, reorg), tails the tip | local server | 141,669 headers genesis→tip in 4.7s |
+| ⑤ | **Live feed over a WS↔TCP bridge** | the tab speaks p2p over a bridge to a real peer, syncs + fully validates the header chain (PoW, BIP94, reorg), tails the tip, and persists to **OPFS** | local server | 141,671 headers genesis→tip in 5.8s; reload **resumes from OPFS in 1.7s** |
 | ⑥ | **Parse Core's `dumptxoutset` snapshot** | Core's real assumeUTXO snapshot (v2 compressed format) parsed in-tab and used as a validating coin view | **GitHub Pages** | full 811 MB file → 13,870,119 coins, 40/40 match `gettxout`; block #120001 validated, 85ms |
 
 Acts ③ ④ ⑥ are fully static and work on GitHub Pages. Acts ① (torrent seeding) and ⑤ (the bridge) need a
@@ -86,6 +86,7 @@ validate-forward.js     load engine + coin view, validate one block forward
 follow-chain.js         applyBlock() + followChain() — validate a run, update the UTXO set
 dumptxoutset.js         parser for Bitcoin Core's dumptxoutset v2 compressed snapshot format
 live-feed.js            connect + syncToTip + tail (header sync over the bridge)
+opfs-header-store.js    persist the header chain to OPFS (main-thread async) — resume on reload
 peer-ws.js              WsPeer — Bitcoin p2p over a WebSocket (browser transport)
 engine/                 vendored @bitcoin-desktop/schema: consensus engine + schemas + stores
 serve.mjs               zero-dep static server (local)
@@ -119,7 +120,7 @@ background re-validation from genesis (not included in this demo) confirms it.
 
 ## Not done yet
 
-- **OPFS persistence** — state is in-memory; swap in the upstream OPFS stores to survive reloads.
+- **OPFS persistence for the UTXO set** — the header chain already persists (act ⑤ resumes from OPFS via `opfs-header-store.js`); the coin view / block store are still in-memory.
 - **WASM-secp + full scale** — a WASM libsecp256k1 backend for inscription-flood blocks (~14k sigs)
   and holding the full 14.1M-coin (~3.2 GB) UTXO set in a tab.
 - **One continuous pipeline** — bootstrap at a tip-height snapshot, then let ⑤ feed ④ live.

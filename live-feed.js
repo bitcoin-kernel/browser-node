@@ -9,14 +9,27 @@ import { HeaderEngine } from './engine/codec/headers.js';
 import { MemoryHeaderStore } from './engine/store/header-store.js';
 import { HeaderSync } from './engine/chain/header-sync.js';
 import { WsPeer } from './peer-ws.js';
+import { OpfsHeaderStore, opfsAvailable } from './opfs-header-store.js';
 
 // Build engine + connect the peer through the bridge. Returns the live session.
-export async function connect({ bridgeUrl, schemas, vectors, log }) {
+export async function connect({ bridgeUrl, schemas, vectors, log, persist = false }) {
   const codec = new Codec(schemas.core, schemas.proof, schemas.p2p);
   const p2p = P2pEngine.fromSchemas(codec, schemas.p2p, schemas.chain, 'btc:testnet4');
   const he = HeaderEngine.fromSchemas(codec, schemas.chain, schemas.validate, 'btc:testnet4');
   const genesis = codec.decode('BlockHeader', vectors.genesisHeader);
-  const store = new MemoryHeaderStore(codec, he, genesis);
+
+  // Persisted (OPFS) store resumes across reloads; otherwise in-memory.
+  const usingOpfs = persist && opfsAvailable();
+  const store = usingOpfs ? new OpfsHeaderStore(codec, he, genesis) : new MemoryHeaderStore(codec, he, genesis);
+  let resumedFrom = 0;
+  if (usingOpfs) {
+    const t0 = performance.now();
+    await store.load();
+    resumedFrom = store.height;
+    if (resumedFrom) log?.(`resumed ${resumedFrom.toLocaleString()} headers from OPFS in ${(performance.now() - t0).toFixed(0)}ms`, 'ok');
+    else log?.('OPFS empty — first sync will persist the chain');
+  }
+
   const peer = new WsPeer(p2p, codec);
   log?.('connecting to bridge → testnet4 peer…');
   await peer.connect(bridgeUrl);
@@ -28,7 +41,7 @@ export async function connect({ bridgeUrl, schemas, vectors, log }) {
     return (msg.payload?.entries ?? []).map((e) => e.header);
   };
   const sync = new HeaderSync(store, he, codec);
-  return { codec, p2p, he, store, peer, sync, fetchHeaders };
+  return { codec, p2p, he, store, peer, sync, fetchHeaders, persisted: usingOpfs, resumedFrom };
 }
 
 // Initial sync from genesis to the peer's tip, validating every header.
