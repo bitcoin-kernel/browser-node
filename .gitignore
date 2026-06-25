@@ -1,0 +1,6 @@
+node_modules/
+package-lock.json
+*.log
+magnet.txt
+snapshot.ndjson
+.DS_Store

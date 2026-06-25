@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>testnet4 UTXO snapshot → browser (WebTorrent + ShardedUtxo)</title>
+<style>
+  :root { color-scheme: dark; }
+  body { background:#0d1117; color:#c9d1d9; font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; max-width:860px; margin:24px auto; padding:0 16px; }
+  h1 { font-size:18px; color:#e6edf3; } h2 { font-size:14px; color:#8b949e; margin-top:24px; text-transform:uppercase; letter-spacing:.05em; }
+  button { background:#21262d; color:#c9d1d9; border:1px solid #30363d; border-radius:6px; padding:8px 14px; cursor:pointer; font:inherit; }
+  button:hover { background:#30363d; } button:disabled { opacity:.4; cursor:default; }
+  #log { background:#010409; border:1px solid #30363d; border-radius:6px; padding:12px; height:200px; overflow:auto; white-space:pre-wrap; }
+  .ok{color:#3fb950} .warn{color:#d29922} .err{color:#f85149} .dim{color:#6e7681}
+  table { border-collapse:collapse; margin-top:8px; } td { padding:2px 14px 2px 0; } td.n{ text-align:right; color:#e6edf3; }
+  #bar { height:6px; background:#21262d; border-radius:3px; overflow:hidden; margin:8px 0; }
+  #bar>i { display:block; height:100%; width:0; background:#3fb950; transition:width .2s; }
+  .pill{ display:inline-block; background:#161b22; border:1px solid #30363d; border-radius:999px; padding:1px 8px; font-size:12px; }
+</style>
+</head>
+<body>
+<h1>bitcoin-kernel / browser-node — a Bitcoin testnet4 node in a tab</h1>
+<p class="dim">Bootstrap a UTXO set from a torrented or Bitcoin Core <i>assumeUTXO</i> snapshot, validate blocks
+forward, follow the chain, and live-sync headers — all in this tab, on the <code>bitcoin-kernel</code> engine.</p>
+<p class="dim" style="border:1px solid #30363d;border-radius:6px;padding:8px 12px">
+<b>Acts ③ ④ ⑥ work here on GitHub Pages.</b> Acts ① (WebTorrent seeding) and ⑤ (the live p2p bridge) need a
+local server — see the <a href="https://github.com/bitcoin-kernel/browser-node#run-it" style="color:#58a6ff">README</a>.</p>
+
+<p>
+  <button id="go">① Load snapshot via WebTorrent</button>
+  <button id="http">② Fallback: load via HTTP webseed</button>
+</p>
+<div id="bar"><i></i></div>
+<h2>Log</h2>
+<div id="log"></div>
+<h2>① Bootstrap — coin view from torrented snapshot</h2>
+<div id="stats" class="dim">— not loaded yet —</div>
+
+<h2>② Forward block validation</h2>
+<p class="dim">Validate the next <b>real testnet4 block (#26000)</b> forward against its coin view — full consensus:
+prevout resolution, scripts/signatures (BIP143), fees, coinbase amount, maturity, witness commitment.
+The <span class="pill">bitcoin-kernel</span> engine runs in this tab; the coin view holds the 28 real prevouts the block spends.</p>
+<p><button id="validate">③ Validate block 26000 forward</button></p>
+<div id="validation" class="dim">— not validated yet —</div>
+
+<h2>③ Follow the chain — multi-block</h2>
+<p class="dim">Validate a run of <b>consecutive real blocks (26000→26020)</b>, applying each to the UTXO set so the
+next block can spend its outputs, and verifying linkage block-to-block. This is a node's inner loop — the step
+from "accepts a block" to "follows the chain." This range is a consolidation cascade: most inputs spend coins
+created earlier <i>in the run</i>, so it only works if the apply step is correct.</p>
+<p><button id="follow">④ Follow chain 26000 → 26020</button></p>
+<div id="followsum" class="dim">— not run yet —</div>
+<div style="overflow:auto"><table id="followtbl"></table></div>
+
+<h2>④ Live feed — follow the network over a WS↔TCP bridge</h2>
+<p class="dim">A browser can't open raw TCP, so the tab speaks the Bitcoin p2p protocol over a WebSocket to a
+thin local <span class="pill">bridge</span> that relays frames to a real testnet4 peer (here, our own synced node).
+The tab does the version/verack handshake, syncs the <b>whole header chain from genesis</b>, and fully validates
+every header (PoW, BIP94 difficulty, linkage, most-work reorg) — then tails the live tip. The bridge is untrusted:
+it can't forge a valid header.</p>
+<p><button id="live">⑤ Connect &amp; sync live</button></p>
+<div id="livestatus" class="dim">— not connected —</div>
+<div id="livetip"></div>
+
+<h2>⑤ assumeUTXO — parse Core's <code>dumptxoutset</code> snapshot</h2>
+<p class="dim">Parse the <b>real Bitcoin Core snapshot we torrented</b> (<code>utxo-testnet4-120000.dat</code>, the v2
+compressed format) directly in the tab, then forward-validate the first post-snapshot block (#120001) against the
+coin view it produces. This is the bridge from a Core assumeUTXO snapshot to a usable, validating node — and the
+ultimate parser proof: real signatures only verify if every decompressed amount and script is exactly right.</p>
+<p><button id="snap">⑥ Parse Core snapshot → validate #120001</button></p>
+<div id="snapresult" class="dim">— not run yet —</div>
+
+<script type="module">
+import WebTorrent from './webtorrent.min.js';
+import { ShardedUtxo } from './sharded-utxo-browser.js';
+import { loadEngine, loadCoinView, validateForward, coinviewOf } from './validate-forward.js';
+import { followChain } from './follow-chain.js';
+import { connect as liveConnect, syncToTip, tail } from './live-feed.js';
+import { DumpReader, parseHeader, coins } from './dumptxoutset.js';
+
+const $log = document.getElementById('log'), $bar = document.querySelector('#bar>i'), $stats = document.getElementById('stats');
+const log = (m, c='') => { const t = new Date().toISOString().slice(11,19); $log.innerHTML += `<span class="dim">${t}</span> <span class="${c}">${m}</span>\n`; $log.scrollTop = $log.scrollHeight; };
+const setBar = (f) => $bar.style.width = (Math.max(0,Math.min(1,f))*100).toFixed(1)+'%';
+const fmt = (n) => n.toLocaleString();
+
+const classify = (spk) =>
+  /^76a914[0-9a-f]{40}88ac$/.test(spk) ? 'P2PKH' :
+  /^a914[0-9a-f]{40}87$/.test(spk) ? 'P2SH' :
+  /^0014[0-9a-f]{40}$/.test(spk) ? 'P2WPKH' :
+  /^0020[0-9a-f]{64}$/.test(spk) ? 'P2WSH' :
+  /^5120[0-9a-f]{64}$/.test(spk) ? 'P2TR' : 'other';
+
+function renderStats(utxo, meta, loadSec) {
+  let totalSats = 0n, coinbase = 0; const types = {}; const samples = [];
+  for (const [key, v] of utxo.entries()) {
+    const t1 = v.indexOf('\t'), t2 = v.indexOf('\t', t1+1), t3 = v.lastIndexOf('\t');
+    totalSats += BigInt(v.slice(0,t1));
+    if (v.slice(t3+1) === '1') coinbase++;
+    const ty = classify(v.slice(t1+1,t2)); types[ty] = (types[ty]||0)+1;
+    if (samples.length < 8) samples.push(key);
+  }
+  // prevout lookup micro-benchmark — the operation block validation actually does
+  const ITER = 500000; let hits = 0; const t0 = performance.now();
+  for (let i=0;i<ITER;i++) if (utxo.get(samples[i % samples.length])) hits++;
+  const ns = (performance.now()-t0)*1e6/ITER;
+  const rows = Object.entries(types).sort((a,b)=>b[1]-a[1])
+    .map(([t,n])=>`<tr><td>${t}</td><td class="n">${fmt(n)}</td><td class="dim">${(100*n/utxo.size).toFixed(1)}%</td></tr>`).join('');
+  $stats.innerHTML = `<table>
+    <tr><td>height</td><td class="n">${meta.height ?? '?'}</td><td class="dim">${meta.network||''}</td></tr>
+    <tr><td>coins loaded</td><td class="n">${fmt(utxo.size)}</td><td class="dim">into ${utxo.n} shards</td></tr>
+    <tr><td>load time</td><td class="n">${loadSec.toFixed(2)} s</td><td class="dim">parse + build</td></tr>
+    <tr><td>total unspent</td><td class="n">${(Number(totalSats)/1e8).toLocaleString()}</td><td class="dim">tBTC</td></tr>
+    <tr><td>coinbase coins</td><td class="n">${fmt(coinbase)}</td></tr>
+    <tr><td>prevout lookup</td><td class="n">${ns.toFixed(0)} ns</td><td class="dim">${(1e9/ns/1e6).toFixed(1)}M gets/s · ${hits===ITER?'all hit ✓':'MISS'}</td></tr>
+  </table><div style="margin-top:8px" class="dim">script types</div><table>${rows}</table>`;
+  log(`coin view ready: ${fmt(utxo.size)} coins, ${(Number(totalSats)/1e8).toLocaleString()} tBTC, lookups ${ns.toFixed(0)}ns`, 'ok');
+}
+
+async function loadFromStream(stream, bytes, label) {
+  const utxo = new ShardedUtxo(64);
+  const t0 = performance.now();
+  const meta = await utxo.loadFromStream(stream, bytes, (lines, read, total) => {
+    if (total) setBar(read/total);
+    if ((lines % 262144) === 0) log(`${label}: ${fmt(lines)} coins parsed…`, 'dim');
+  });
+  setBar(1);
+  const loadSec = (performance.now()-t0)/1000;
+  log(`${label}: parsed ${fmt(utxo.size)} coins in ${loadSec.toFixed(2)}s`, 'ok');
+  renderStats(utxo, meta, loadSec);
+}
+
+// ── Path ②: HTTP webseed (always works on localhost; proves the ShardedUtxo path) ──
+document.getElementById('http').onclick = async () => {
+  try {
+    log('fetching snapshot.ndjson over HTTP…');
+    const res = await fetch('snapshot.ndjson');
+    if (!res.ok) { log('snapshot.ndjson not found — act ① is local-only: run `node tools/gen-snapshot.mjs 250000 snapshot.ndjson` then `node serve.mjs`. (Acts ③④⑥ work here.)', 'warn'); return; }
+    const bytes = +res.headers.get('content-length') || 0;
+    await loadFromStream(res.body, bytes, 'http');
+  } catch (e) { log('HTTP load failed: '+e.message, 'err'); }
+};
+
+// ── Path ①: WebTorrent (real magnet, wss trackers + ws= webseed) ──
+document.getElementById('go').onclick = async () => {
+  document.getElementById('go').disabled = true;
+  try {
+    const mres = await fetch('magnet.txt');
+    if (!mres.ok) { log('magnet.txt not found — act ① is local-only: run `node serve.mjs` and `node seed.mjs`. (Acts ③④⑥ work here.)', 'warn'); document.getElementById('go').disabled = false; return; }
+    const magnet = (await mres.text()).trim();
+    log('magnet: '+magnet.slice(0,64)+'…', 'dim');
+    const client = new WebTorrent();
+    client.on('error', e => log('client error: '+e.message, 'err'));
+    log('adding torrent — connecting to swarm…');
+    client.add(magnet, async (torrent) => {
+      log(`metadata ready: ${torrent.files[0].name} (${(torrent.length/1048576).toFixed(1)} MB)`, 'ok');
+      const iv = setInterval(() => log(
+        `peers ${torrent.numPeers} · ${(100*torrent.progress).toFixed(0)}% · ↓${(torrent.downloadSpeed/1048576).toFixed(2)} MB/s`, 'dim'), 1000);
+      torrent.on('done', async () => {
+        clearInterval(iv);
+        log('torrent complete — streaming into ShardedUtxo', 'ok');
+        const blob = await torrent.files[0].blob();
+        await loadFromStream(blob.stream(), blob.size, 'webtorrent');
+      });
+    });
+  } catch (e) { log('WebTorrent load failed: '+e.message+' — try path ②', 'err'); }
+};
+
+// ── Path ③: forward block validation (the node accepting the next block) ──
+const ruleRows = (res) => res.map(x =>
+  `<tr><td>${x.ok===true?'<span class="ok">✓</span>':x.ok===false?'<span class="err">✗ FAIL</span>':'<span class="dim">– skip</span>'}</td><td class="dim">${x.rule}</td></tr>`).join('');
+document.getElementById('validate').onclick = async () => {
+  const btn = document.getElementById('validate'); btn.disabled = true;
+  const $v = document.getElementById('validation');
+  try {
+    log('— forward block validation —', 'ok');
+    await loadEngine(log);
+    const { coinview } = await loadCoinView('data/snapshot-26000.ndjson', log);
+    const r = await validateForward({ blockUrl: 'data/block-26000.hex', height: 26000, coinview }, log);
+    $v.innerHTML = `<table>
+      <tr><td>block</td><td class="n">26000</td><td class="dim">${r.txs} txs</td></tr>
+      <tr><td>inputs resolved</td><td class="n">${r.resolved}/${r.inputs}</td><td class="dim">from the coin view</td></tr>
+      <tr><td>validated in</td><td class="n">${r.ms.toFixed(0)} ms</td><td class="dim">pure-JS secp256k1</td></tr>
+    </table>
+    <div class="dim" style="margin-top:8px">structure rules</div><table>${ruleRows(r.structure)}</table>
+    <div class="dim" style="margin-top:8px">context rules — against the coin view</div><table>${ruleRows(r.context)}</table>
+    <p class="${r.ok?'ok':'err'}">${r.ok?'✅ block 26000 fully validated forward — the bootstrapped node accepts it':'❌ validation failed'}</p>`;
+    log(r.ok ? `block 26000 ACCEPTED — ${r.resolved}/${r.inputs} inputs, scripts verified, ${r.ms.toFixed(0)}ms` : 'block REJECTED', r.ok?'ok':'err');
+  } catch (e) { $v.innerHTML = `<span class="err">error: ${e.message}</span>`; log('validation error: '+e.message, 'err'); console.error(e); }
+  btn.disabled = false;
+};
+
+// ── Path ④: follow the chain — validate consecutive blocks, applying UTXO updates ──
+document.getElementById('follow').onclick = async () => {
+  const btn = document.getElementById('follow'); btn.disabled = true;
+  const $sum = document.getElementById('followsum'), $tbl = document.getElementById('followtbl');
+  $tbl.innerHTML = `<tr class="dim"><td>height</td><td>txs</td><td>inputs</td><td>link</td><td>valid</td><td>applied</td><td>UTXO set</td><td>ms</td></tr>`;
+  try {
+    log('— follow the chain 26000→26020 —', 'ok');
+    const { codec, be } = await loadEngine(log);
+    const { snap } = await loadCoinView('data/range-seed.ndjson', log);  // seed UTXO set
+    const startSize = snap.size;
+    const range = await (await fetch('data/range.json')).json();
+    log(`seed ${startSize} coins; following ${range.blocks.length} blocks…`);
+    const cell = (v) => `<td class="n">${v}</td>`;
+    const r = await followChain({ range, codec, be, snap, coinview: coinviewOf(snap),
+      onBlock: (b) => {
+        $tbl.innerHTML += `<tr>${cell('#'+b.height)}${cell(b.txs)}${cell(b.inputs)}` +
+          `<td class="n ${b.linked===false?'err':'ok'}">${b.linked===null?'—':b.linked?'✓':'✗'}</td>` +
+          `<td class="n ${b.ok?'ok':'err'}">${b.ok?'✓':'✗'}</td>` +
+          `<td class="n dim">−${b.applied.spent}/+${b.applied.created}</td>${cell(b.utxoSize)}${cell(b.ms.toFixed(0))}</tr>`;
+      }});
+    const tot = r.results.reduce((s,b)=>s+b.ms,0);
+    $sum.innerHTML = `<p class="${r.validated===r.total?'ok':'err'}">${r.validated===r.total?'✅':'❌'} followed ${fmt(r.validated)}/${fmt(r.total)} blocks · ` +
+      `UTXO set ${fmt(startSize)} → ${fmt(snap.size)} coins · ${(tot/1000).toFixed(1)}s total (pure-JS secp)</p>`;
+    log(`chain followed: ${r.validated}/${r.total} blocks, UTXO ${startSize}→${snap.size}`, r.validated===r.total?'ok':'err');
+  } catch (e) { $sum.innerHTML = `<span class="err">error: ${e.message}</span>`; log('follow error: '+e.message, 'err'); console.error(e); }
+  btn.disabled = false;
+};
+
+// ── Path ⑤: live feed — header sync + tail over the WS↔TCP bridge ──
+let liveStop = null;
+document.getElementById('live').onclick = async () => {
+  const btn = document.getElementById('live'); btn.disabled = true;
+  const $s = document.getElementById('livestatus'), $t = document.getElementById('livetip');
+  try {
+    if (liveStop) { liveStop(); liveStop = null; }
+    log('— live feed —', 'ok');
+    const jl = (n) => fetch(`./engine/schema/${n}.jsonld`).then(r => r.json());
+    const [core, proof, p2p, chain, validate] = await Promise.all(['core','proof','p2p','chain','validate'].map(jl));
+    const vectors = await (await fetch('./data/testnet4.json')).json();
+    const t0 = performance.now();
+    const session = await liveConnect({ bridgeUrl: 'ws://localhost:8334', schemas: { core, proof, p2p, chain, validate }, vectors, log });
+    $s.innerHTML = '<span class="ok">handshake ok</span> — syncing header chain from genesis…';
+    await syncToTip(session, { onBatch: ({ tip, reorg }) => {
+      if (reorg) log(`reorg: rolled back ${reorg.depth} at height ${fmt(reorg.atHeight)}`, 'warn');
+      $s.innerHTML = `syncing… validated to height <b>${fmt(tip.height)}</b>`;
+    }});
+    const tip = session.store.tip();
+    const secs = ((performance.now()-t0)/1000).toFixed(1);
+    $s.innerHTML = `<span class="ok">✅ synced + validated ${fmt(tip.height)} headers from genesis in ${secs}s</span> · tip <span class="dim">${tip.hash.slice(0,24)}…</span><br><span class="dim">watching for new blocks (live tail)…</span>`;
+    log(`live: ${fmt(tip.height)} headers validated over the bridge in ${secs}s`, 'ok');
+    $t.innerHTML = `<table><tr class="dim"><td>live tip</td><td class="n">#${fmt(tip.height)}</td><td class="dim">${tip.hash.slice(0,20)}…</td></tr></table>`;
+    liveStop = tail(session, { intervalMs: 8000, log, onTip: (t) => {
+      log(`new block #${fmt(t.height)} ${t.hash.slice(0,16)}… (+${t.added})`, 'ok');
+      $t.innerHTML = `<table><tr class="ok"><td>live tip</td><td class="n">#${fmt(t.height)}</td><td class="dim">${t.hash.slice(0,20)}… (just appended)</td></tr></table>`;
+    }});
+    btn.textContent = '⑤ Live — tailing tip';
+  } catch (e) { $s.innerHTML = `<span class="err">error: ${e.message}</span> <span class="dim">(is the bridge running on :8334?)</span>`; log('live error: '+e.message, 'err'); console.error(e); btn.disabled = false; }
+};
+
+// ── Path ⑥: parse Core's dumptxoutset snapshot, then forward-validate #120001 ──
+const classifySpk = (s) => s.startsWith('0014')?'P2WPKH':s.startsWith('5120')?'P2TR':s.startsWith('0020')?'P2WSH':s.startsWith('76a914')?'P2PKH':s.startsWith('a914')?'P2SH':'other';
+document.getElementById('snap').onclick = async () => {
+  const btn = document.getElementById('snap'); btn.disabled = true;
+  const $r = document.getElementById('snapresult');
+  try {
+    log('— parse Core dumptxoutset snapshot —', 'ok');
+    log('fetching utxo-prefix.dat (Core v2 snapshot)…');
+    const bytes = new Uint8Array(await (await fetch('data/utxo-prefix.dat')).arrayBuffer());
+    const r = new DumpReader(bytes);
+    const hdr = parseHeader(r);
+    log(`header: version ${hdr.version}, base ${hdr.baseHash.slice(0,16)}…, coins_count ${fmt(hdr.coinsCount)}`, 'ok');
+    const types = {}; let n = 0; let sample = null; const t0 = performance.now();
+    for (const c of coins(r)) { n++; const t = classifySpk(c.scriptPubKey); types[t] = (types[t]||0)+1; if (!sample && c.scriptPubKey.startsWith('0014')) sample = c; }
+    const ms = performance.now() - t0;
+    const trow = Object.entries(types).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`<tr><td>${k}</td><td class="n">${fmt(v)}</td><td class="dim">${(100*v/n).toFixed(1)}%</td></tr>`).join('');
+    log(`parsed ${fmt(n)} coins from the prefix in ${ms.toFixed(0)}ms`, 'ok');
+
+    // forward-validate #120001 against the coin view derived from the parsed Core snapshot
+    log('validating block #120001 against the parsed-snapshot coin view…');
+    const { coinview } = await loadCoinView('data/snapshot-120001.ndjson', log);
+    const v = await validateForward({ blockUrl: 'data/block-120001.hex', height: 120001, coinview }, log);
+    $r.innerHTML = `<table>
+        <tr><td>snapshot format</td><td class="n">Core dumptxoutset v${hdr.version}</td><td class="dim">${hdr.netMagic} (testnet4)</td></tr>
+        <tr><td>base block</td><td class="n">#120000</td><td class="dim">${hdr.baseHash.slice(0,20)}…</td></tr>
+        <tr><td>coins in full snapshot</td><td class="n">${fmt(hdr.coinsCount)}</td><td class="dim">13.87M</td></tr>
+        <tr><td>parsed from prefix</td><td class="n">${fmt(n)}</td><td class="dim">${ms.toFixed(0)}ms, in-tab</td></tr>
+      </table>
+      <div class="dim" style="margin-top:8px">script types (decompressed from Core format)</div><table>${trow}</table>
+      <div class="dim" style="margin-top:8px">forward-validate #120001 against the parsed snapshot</div>
+      <p class="${v.ok?'ok':'err'}">${v.ok?`✅ block #120001 fully validated (${v.txs} txs, ${v.resolved} snapshot inputs + intra-block, scripts verified, ${v.ms.toFixed(0)}ms) — a Core assumeUTXO snapshot is now a validating coin view in the browser`:'❌ validation failed'}</p>`;
+    log(v.ok ? `#120001 ACCEPTED against parsed Core snapshot (${v.ms.toFixed(0)}ms)` : '#120001 REJECTED', v.ok?'ok':'err');
+  } catch (e) { $r.innerHTML = `<span class="err">error: ${e.message}</span>`; log('snapshot error: '+e.message, 'err'); console.error(e); }
+  btn.disabled = false;
+};
+
+log('ready. ① torrent UTXO → ③ validate a block → ④ follow a run → ⑤ live feed → ⑥ parse Core snapshot + validate.', 'ok');
+</script>
+</body>
+</html>

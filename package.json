@@ -1,0 +1,20 @@
+{
+  "name": "bitcoin-kernel-browser-node",
+  "version": "0.0.1",
+  "description": "A Bitcoin testnet4 node in a browser tab: bootstrap a UTXO set from a torrented / Core assumeUTXO snapshot, validate blocks forward, follow the chain, and live-sync headers over a WS-to-TCP bridge.",
+  "type": "module",
+  "license": "AGPL-3.0-or-later",
+  "homepage": "https://bitcoin-kernel.github.io/browser-node/",
+  "repository": { "type": "git", "url": "https://github.com/bitcoin-kernel/browser-node" },
+  "scripts": {
+    "serve": "node serve.mjs",
+    "bridge": "node bridge.mjs",
+    "seed": "node seed.mjs",
+    "gen-snapshot": "node tools/gen-snapshot.mjs 250000 snapshot.ndjson",
+    "test": "node validate-node-test.mjs && node adversarial-test.mjs && node follow-node-test.mjs && node snapshot-node-test.mjs"
+  },
+  "optionalDependencies": {
+    "webtorrent": "^2.8.0",
+    "ws": "^8.18.0"
+  }
+}

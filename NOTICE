@@ -1,0 +1,15 @@
+bitcoin-kernel/browser-node
+Copyright (C) 2026 Melvin Carvalho and contributors
+Licensed under AGPL-3.0-or-later (see LICENSE).
+
+Built on:
+- bitcoin-kernel/node          — browser-native Bitcoin node (AGPL-3.0-or-later)
+                                 https://github.com/bitcoin-kernel/node
+- @bitcoin-desktop/schema      — the pure-JS consensus engine, vendored under
+                                 engine/ (AGPL-3.0-or-later)
+                                 https://github.com/bitcoin-desktop/schema
+- webtorrent (MIT)             — webtorrent.min.js, bundled for act ①
+
+The engine/ directory is upstream source from @bitcoin-desktop/schema, unmodified
+except that bare import specifiers ("@bitcoin-desktop/schema/...") were rewritten
+to relative paths so the modules load directly in a browser.

@@ -1,0 +1,76 @@
+{
+  "name": "bitcoin-kernel/browser-node",
+  "version": "0.0.1",
+  "description": "A Bitcoin testnet4 node's validation core running in a browser tab: bootstrap a UTXO set from a torrented or Bitcoin Core assumeUTXO snapshot, validate blocks forward, follow the chain, and live-sync the header chain over a WebSocket-to-TCP bridge.",
+  "homepage": "https://bitcoin-kernel.github.io/browser-node/",
+  "repository": "https://github.com/bitcoin-kernel/browser-node",
+  "network": "testnet4",
+  "license": "AGPL-3.0-or-later",
+  "status": "demo",
+  "built_on": {
+    "engine": "@bitcoin-desktop/schema (pure-JS consensus engine, vendored under engine/)",
+    "node": "bitcoin-kernel/node (browser-native node design: HeaderSync, WsPeer, ShardedUtxo, stores)"
+  },
+  "acts": [
+    {
+      "id": 1, "name": "Bootstrap UTXO from a torrented snapshot", "ui": ["①", "②"],
+      "proves": "A UTXO snapshot fetched over WebTorrent (or HTTP) streams into a sharded coin view in the tab.",
+      "runs_on": "local-server", "requires": ["serve.mjs", "seed.mjs (webtorrent)", "tools/gen-snapshot.mjs"],
+      "modules": ["sharded-utxo-browser.js", "webtorrent.min.js"],
+      "verified": { "browser": "250,000 coins parsed in 0.11s", "scale_node": "14,100,000 coins = 3.23 GB resident, 9.7s load, 246 B/coin, 26M lookups/s" }
+    },
+    {
+      "id": 3, "name": "Validate a block forward", "ui": ["③"],
+      "proves": "One real block fully validated against a coin view: prevout resolution, scripts/signatures (BIP143), fees, maturity, witness commitment.",
+      "runs_on": "github-pages", "requires": [],
+      "modules": ["validate-forward.js", "engine/codec/blocks.js"],
+      "data": ["data/block-26000.hex", "data/snapshot-26000.ndjson"],
+      "verified": { "browser": "block #26000, 16/16 rules, 28 signatures, 45ms", "adversarial": "1-sat tamper to a coin value -> scripts rule FAILS (rejected)" }
+    },
+    {
+      "id": 4, "name": "Follow the chain", "ui": ["④"],
+      "proves": "A run of consecutive blocks validated, applying each to the UTXO set (spend/create) so later blocks spend earlier blocks' outputs; linkage checked block-to-block.",
+      "runs_on": "github-pages", "requires": [],
+      "modules": ["follow-chain.js"],
+      "data": ["data/range.json", "data/range-seed.ndjson"],
+      "verified": { "browser": "blocks 26000..26020 (21), UTXO set 249 -> 1,361 coins, 1.1s; 842 of 1,091 inputs spend within-run coins" }
+    },
+    {
+      "id": 5, "name": "Live feed over a WS-to-TCP bridge", "ui": ["⑤"],
+      "proves": "The tab speaks the Bitcoin p2p protocol over a WebSocket bridge to a real testnet4 peer, syncs the whole header chain from genesis, fully validates every header (PoW, BIP94 difficulty, linkage, most-work reorg), and tails the live tip.",
+      "runs_on": "local-server", "requires": ["bridge.mjs (ws)", "a testnet4 peer (e.g. bitcoind on :48333)"],
+      "modules": ["live-feed.js", "peer-ws.js", "engine/chain/header-sync.js", "engine/store/header-store.js", "engine/codec/p2p.js", "engine/codec/headers.js"],
+      "data": ["data/testnet4.json"],
+      "verified": { "browser": "141,669 headers genesis->tip validated in 4.7s", "node": "5.1s, 0 reorgs" }
+    },
+    {
+      "id": 6, "name": "Parse Core's dumptxoutset snapshot", "ui": ["⑥"],
+      "proves": "Bitcoin Core's real assumeUTXO snapshot (dumptxoutset v2 compressed format) is parsed in the tab and used as a validating coin view for the first post-snapshot block.",
+      "runs_on": "github-pages", "requires": [],
+      "modules": ["dumptxoutset.js", "validate-forward.js"],
+      "data": ["data/utxo-prefix.dat", "data/snapshot-120001.ndjson", "data/block-120001.hex"],
+      "verified": {
+        "parser_node": "full 811 MB file: all 13,870,119 coins parsed to clean EOF; 40/40 sampled coins match bitcoind gettxout (value + scriptPubKey); 7 P2PK-uncompressed of 13.87M",
+        "browser": "prefix parsed in-tab + block #120001 validated forward against it (52 txs, 85ms)"
+      }
+    }
+  ],
+  "servers": [
+    { "name": "serve",  "cmd": "node serve.mjs",  "port": 8088, "deps": [],            "for": "static hosting of acts ②③④⑥ (or use GitHub Pages)" },
+    { "name": "seed",   "cmd": "node seed.mjs",   "port": null, "deps": ["webtorrent"], "for": "act ① WebTorrent seeding (writes magnet.txt; needs serve.mjs for the webseed)" },
+    { "name": "bridge", "cmd": "node bridge.mjs", "port": 8334, "deps": ["ws"],         "for": "act ⑤ WebSocket-to-TCP relay to a testnet4 peer (env: PEER_HOST, PEER_PORT, WS_PORT)" }
+  ],
+  "run": {
+    "github_pages": "Open https://bitcoin-kernel.github.io/browser-node/ and use buttons ③ ④ ⑥ (acts ① ⑤ need a local server).",
+    "local_static": ["node serve.mjs", "open http://localhost:8088"],
+    "local_act1": ["node tools/gen-snapshot.mjs 250000 snapshot.ndjson", "node serve.mjs &", "npm install", "node seed.mjs"],
+    "local_act5": ["npm install", "have a testnet4 node listening on :48333", "node bridge.mjs", "click ⑤"],
+    "tests": "npm test  (validate, adversarial, follow, snapshot — self-contained, uses committed data)"
+  },
+  "trust_model": "The bridge and torrent/HTTP transports are untrusted: they cannot forge valid blocks or headers because the tab validates everything (PoW, difficulty, scripts, signatures, fees). Their only powers are withholding and eclipsing. assumeUTXO trusts the snapshot's UTXO set until background validation (not included here) re-derives it from genesis.",
+  "remaining": [
+    "OPFS persistence: swap MemoryHeaderStore / in-memory UTXO for the upstream OPFS stores so state survives reloads.",
+    "WASM-secp + full scale: a WASM libsecp256k1 backend for inscription-flood blocks (~14k signatures each) and holding the full 14.1M-coin (~3.2 GB) UTXO set in a tab.",
+    "One continuous pipeline: bootstrap at a tip-height snapshot, then let act ⑤ feed act ④ live (needs a snapshot at the live tip + the scale work above)."
+  ]
+}
