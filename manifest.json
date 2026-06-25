@@ -5,6 +5,7 @@
   "homepage": "http://bitcoin-kernel.com/browser-node/",
   "repository": "https://github.com/bitcoin-kernel/browser-node",
   "pages": { "showcase": "index.html — the ten acts, explained", "node": "node.html — the running-node dashboard (capstone): live headers + bootstrap + forward validation in a worker" },
+  "reached_live_tip": "tools/reach-tip.mjs bootstrapped from a real Core dumptxoutset snapshot at height 141,574 and validated 106 blocks forward to the live testnet4 tip #141,680 (including a 1,513-input block and 6 blocks mined during the run), 3,511 inputs verified, 7.6s in Node. It keeps only the coins the forward blocks spend; holding the full set is the remaining scale work below.",
   "network": "testnet4",
   "license": "AGPL-3.0-or-later",
   "status": "demo",
@@ -94,6 +95,6 @@
   },
   "trust_model": "The bridge and torrent/HTTP transports are untrusted: they cannot forge valid blocks or headers because the tab validates everything (PoW, difficulty, scripts, signatures, fees). Their only powers are withholding and eclipsing. assumeUTXO trusts the snapshot's UTXO set until background validation (not included here) re-derives it from genesis.",
   "remaining": [
-    "Reach the actual live tip: the running-node pipeline is built (node.html — live header feed + UTXO bootstrap + forward validation in the worker, over a real block range). Validating all the way to the live tip additionally needs an assumeUTXO snapshot AT a recent height plus validating the inscription-flood blocks between it and the tip — a data + throughput cost, not new code."
+    "Hold the FULL UTXO set in a browser tab. Validating forward to the live tip already works (tools/reach-tip.mjs), but it keeps only the coins the forward blocks spend. The whole 14.1M-coin set is ~25 GB (~1,900 bytes/coin) in the current string-keyed Map — over a tab's limit. This needs a compact binary coin store (~50-100 B/coin -> ~1-1.5 GB) or an OPFS-backed on-disk UTXO set. Large snapshots are distributed via WebTorrent, never committed to git."
   ]
 }

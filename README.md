@@ -129,10 +129,13 @@ background re-validation from genesis (not included in this demo) confirms it.
 
 ## Not done yet
 
-- **Reach the actual live tip** — the running-node pipeline is built ([`node.html`](./node.html): live
-  headers + UTXO bootstrap + forward validation in the worker, over a real block range). Validating all
-  the way to the live tip additionally needs an assumeUTXO snapshot *at* a recent height plus validating
-  the inscription-flood blocks between it and the tip — a data + throughput cost, not new code.
+- **Hold the full UTXO set in a tab** — validating forward to the live tip already works: `tools/reach-tip.mjs`
+  bootstraps from a real Core `dumptxoutset` snapshot and validates block-by-block to the current testnet4
+  tip (verified: snapshot at #141,574 → tip #141,680, 3,511 inputs, including a 1,513-input block and blocks
+  mined during the run). But it keeps only the coins the forward blocks spend — the **whole** 14.1M-coin set
+  is **~25 GB** (~1,900 B/coin) in the string-keyed Map, over a tab's limit. Fitting it needs a compact
+  binary coin store (~50–100 B/coin) or an OPFS-backed on-disk UTXO set. Large snapshots are distributed
+  via **WebTorrent**, never committed.
 
 ## License & attribution
 
