@@ -91,6 +91,15 @@ you don't swap consensus crypto on faith.</p>
 <p><button id="wasm">⑨ Benchmark secp: pure-JS vs WASM (block #26000)</button></p>
 <div id="wasmresult" class="dim">— not run yet —</div>
 
+<h2>⑧ Run the node in a Web Worker — scale</h2>
+<p class="dim">At full 14M-coin scale, validating inscription-flood blocks (~14k sigs) and writing multi-GB UTXO
+checkpoints would freeze the tab. The fix: run the engine, the WASM secp backend, the UTXO set, and OPFS
+<b>sync access handles</b> (Worker-only, the fast I/O path) inside a <b>Web Worker</b>. Below: the same
+validation runs in the Worker (UI stays responsive) and on the main thread (UI freezes) — measured by the
+largest gap between animation ticks.</p>
+<p><button id="worker">⑩ Validate in a Worker vs on the main thread</button></p>
+<div id="workerresult" class="dim">— not run yet —</div>
+
 <script type="module">
 import WebTorrent from './webtorrent.min.js';
 import { ShardedUtxo } from './sharded-utxo-browser.js';
@@ -396,7 +405,58 @@ document.getElementById('wasm').onclick = async () => {
   btn.disabled = false;
 };
 
-log('ready. ① torrent → ③ validate → ④ follow → ⑤ live (OPFS) → ⑥ Core snapshot → ⑦⑧ persist UTXO → ⑨ WASM secp.', 'ok');
+// ── Path ⑩: run the node in a Web Worker (scale) — A/B against the main thread ──
+let _worker = null, _rpcId = 0; const _rpc = new Map();
+function workerCall(cmd) {
+  if (!_worker) {
+    _worker = new Worker('node-worker.js', { type: 'module' });
+    _worker.onmessage = (e) => { const { id, ok, result, error } = e.data; const p = _rpc.get(id); if (!p) return; _rpc.delete(id); ok ? p.resolve(result) : p.reject(new Error(error)); };
+    _worker.onerror = (e) => log('worker error: ' + (e.message || e.filename), 'err');
+  }
+  const id = ++_rpcId; _worker.postMessage({ id, cmd });
+  return new Promise((resolve, reject) => _rpc.set(id, { resolve, reject }));
+}
+// main-thread liveness meter: largest gap between 16ms ticks (big gap = UI frozen)
+function meter() { let ticks = 0, max = 0, last = performance.now(); const iv = setInterval(() => { const n = performance.now(); const g = n - last; if (g > max) max = g; last = n; ticks++; }, 16); return () => { clearInterval(iv); const finalGap = performance.now() - last; if (finalGap > max) max = finalGap; return { ticks, max }; }; }
+async function followOnMainThread() {
+  const { codec, be } = await loadEngine();
+  const snap = new ShardedUtxo(64);
+  const seed = await (await fetch('data/range-seed.ndjson')).text();
+  let first = true; for (const l of seed.split('\n')) { if (!l) continue; if (first) { first = false; continue; } const [k, v] = JSON.parse(l); snap.set(k, v); }
+  const range = await (await fetch('data/range.json')).json();
+  await followChain({ range, codec, be, snap, coinview: coinviewOf(snap) });
+}
+document.getElementById('worker').onclick = async () => {
+  const btn = document.getElementById('worker'); btn.disabled = true;
+  const $r = document.getElementById('workerresult');
+  try {
+    log('— web worker / scale —', 'ok');
+    log('spawning worker; loading engine + WASM secp inside it…');
+    await workerCall('init');
+    // A) heavy validation IN the worker — measure main-thread responsiveness
+    let stop = meter();
+    const w = await workerCall('followRange');
+    const wm = stop();
+    const ck = await workerCall('checkpoint');   // OPFS sync access handle (worker-only)
+    log(`worker: followed ${fmt(w.validated)}/${fmt(w.total)} blocks, UTXO ${fmt(w.utxoStart)}→${fmt(w.utxoEnd)} in ${w.ms.toFixed(0)}ms; checkpoint ${(ck.bytes/1048576).toFixed(2)}MB`, 'ok');
+    // B) same validation on the MAIN thread — measure the freeze
+    log('now running the same on the main thread (will freeze the UI)…');
+    await new Promise(r => setTimeout(r, 30));
+    stop = meter();
+    await followOnMainThread();
+    const mm = stop();
+    $r.innerHTML = `<table>
+      <tr><td>task</td><td class="dim" colspan="2">follow + validate 21 blocks (26000–26020), apply UTXO updates</td></tr>
+      <tr><td>in Web Worker</td><td class="n">${w.ms.toFixed(0)} ms</td><td class="dim"><span class="ok">UI responsive</span> — max frame gap <b>${wm.max.toFixed(0)}ms</b> (${fmt(wm.ticks)} ticks)</td></tr>
+      <tr><td>on main thread</td><td class="n">—</td><td class="dim"><span class="err">UI frozen</span> — max frame gap <b>${mm.max.toFixed(0)}ms</b> (${fmt(mm.ticks)} ticks)</td></tr>
+      <tr><td>OPFS checkpoint</td><td class="n">${(ck.bytes/1048576).toFixed(2)} MB</td><td class="dim">written via sync access handle (Worker-only)</td></tr>
+    </table><p class="ok">✅ engine + WASM secp + OPFS sync-handle persistence run in a Worker — UI stays responsive (${wm.max.toFixed(0)}ms gap) vs frozen on the main thread (${mm.max.toFixed(0)}ms gap).</p>`;
+    log(`worker keeps UI responsive (${wm.max.toFixed(0)}ms gap) vs main-thread freeze (${mm.max.toFixed(0)}ms gap)`, 'ok');
+  } catch (e) { $r.innerHTML = `<span class="err">error: ${e.message}</span>`; log('worker error: ' + e.message, 'err'); console.error(e); }
+  btn.disabled = false;
+};
+
+log('ready. ① torrent → ③ validate → ④ follow → ⑤ live (OPFS) → ⑥ Core snapshot → ⑦⑧ persist → ⑨ WASM → ⑩ worker.', 'ok');
 </script>
 </body>
 </html>

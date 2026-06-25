@@ -43,6 +43,7 @@ and the browser-node design ([`bitcoin-kernel/node`](https://github.com/bitcoin-
 | ⑥ | **Parse Core's `dumptxoutset` snapshot** | Core's real assumeUTXO snapshot (v2 compressed format) parsed in-tab and used as a validating coin view | **GitHub Pages** | full 811 MB file → 13,870,119 coins, 40/40 match `gettxout`; block #120001 validated, 85ms |
 | ⑦ | **Persist the UTXO set (OPFS)** | the RAM-resident coin view is checkpointed to OPFS and resumes from disk on reload | **GitHub Pages** | 16,913 coins → 2.5 MB checkpoint (17ms); reload resumes in 11ms |
 | ⑨ | **WASM signature verification** | a WASM libsecp256k1 backend swapped in via `setVerifyBackend`, gated by verdict-equivalence | **GitHub Pages** | block #26000: ~1,161 → ~4,895 verifies/s (4.2× at block level), verdicts identical |
+| ⑩ | **Run the node in a Web Worker (scale)** | engine + WASM secp + UTXO store + OPFS sync-handles run off the main thread, so validation/checkpoints don't freeze the UI | **GitHub Pages** | follow 21 blocks in a Worker: UI responsive (16 ms frame gap) vs frozen on the main thread (~1063 ms) |
 
 Acts ③ ④ ⑥ are fully static and work on GitHub Pages. Acts ① (torrent seeding) and ⑤ (the bridge) need a
 local server — see below.
@@ -92,6 +93,7 @@ opfs-header-store.js    persist the header chain to OPFS (main-thread async) —
 opfs-coins-store.js     checkpoint the UTXO set (ShardedUtxo) to OPFS — resume on reload
 wasm-secp.js            WASM libsecp256k1 backend (tiny-secp256k1 wasm) for setVerifyBackend
 secp256k1.wasm          the libsecp256k1 binary (1.2 MB — the one large file in the repo)
+node-worker.js          the validation core in a Web Worker (engine + WASM secp + UTXO + OPFS sync handles)
 peer-ws.js              WsPeer — Bitcoin p2p over a WebSocket (browser transport)
 engine/                 vendored @bitcoin-desktop/schema: consensus engine + schemas + stores
 serve.mjs               zero-dep static server (local)
@@ -125,10 +127,10 @@ background re-validation from genesis (not included in this demo) confirms it.
 
 ## Not done yet
 
-- **Non-blocking at scale** — persistence (⑤⑦⑧) and the WASM secp backend (⑨) work main-thread; moving
-  the store + validation into a Web Worker with sync access handles would keep multi-GB checkpoints and
-  flood-block validation off the UI thread at the full 14.1M-coin scale.
-- **One continuous pipeline** — bootstrap at a tip-height snapshot, then let ⑤ feed ④ live.
+- **One continuous pipeline (capstone)** — bootstrap at a tip-height assumeUTXO snapshot, then let the
+  live header feed (⑤) drive forward block validation (④) inside the worker (⑩), tying all acts into one
+  running node. Needs a snapshot at the live tip plus downloading/validating the blocks in between
+  (the WASM secp backend and the worker are already in place).
 
 ## License & attribution
 

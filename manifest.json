@@ -69,6 +69,14 @@
       "modules": ["wasm-secp.js", "secp256k1.wasm", "engine/codec/secp256k1.js"],
       "data": ["data/block-26000.hex", "data/snapshot-26000.ndjson"],
       "verified": { "browser": "block #26000: pure-JS ~1,161 verifies/s vs WASM ~4,895 verifies/s (4.2x at block level), verdicts identical", "node": "wasm-secp-test.mjs: WASM verdicts == pure-JS verdicts on all 9 context rules" }
+    },
+    {
+      "id": 10, "name": "Run the node in a Web Worker (scale)", "ui": ["⑩"],
+      "proves": "The engine, WASM secp backend, UTXO set, and OPFS persistence (sync access handles, Worker-only) run inside a Web Worker, so flood-block validation and multi-GB checkpoints don't freeze the UI.",
+      "runs_on": "github-pages", "requires": [],
+      "modules": ["node-worker.js", "validate-forward.js", "follow-chain.js", "wasm-secp.js", "sharded-utxo-browser.js"],
+      "data": ["data/range.json", "data/range-seed.ndjson"],
+      "verified": { "browser": "follow+validate 21 blocks in a Worker: UI responsive (max frame gap 16ms) vs frozen on the main thread (~1063ms); UTXO checkpointed via an OPFS sync access handle" }
     }
   ],
   "servers": [
@@ -85,7 +93,6 @@
   },
   "trust_model": "The bridge and torrent/HTTP transports are untrusted: they cannot forge valid blocks or headers because the tab validates everything (PoW, difficulty, scripts, signatures, fees). Their only powers are withholding and eclipsing. assumeUTXO trusts the snapshot's UTXO set until background validation (not included here) re-derives it from genesis.",
   "remaining": [
-    "Move the persistence + validation into a Web Worker with OPFS sync access handles so multi-GB checkpoints and flood-block validation don't block the UI at full 14.1M-coin scale (the checkpoint model and the WASM secp backend already work main-thread).",
-    "One continuous pipeline: bootstrap at a tip-height snapshot, then let act ⑤ feed act ④ live (needs a snapshot at the live tip + the scale work above)."
+    "Capstone — one continuous pipeline: bootstrap at a tip-height assumeUTXO snapshot, then let the live header feed (⑤) drive forward block validation (④) inside the worker (⑩), tying all acts into one running node. Needs a snapshot at the live tip plus downloading/validating the blocks between it and the tip (WASM secp + worker already in place)."
   ]
 }
