@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>bitcoin-kernel/browser-node — keys (generate a testnet4 wallet)</title>
+<style>
+  :root { --bg:#fff; --fg:#16181d; --mut:#5b6470; --bd:#e6e8eb; --pan:#fafbfc; --ac:#e8830c; --ac2:#0969da; --good:#1a7f37; --bad:#cf222e; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; color-scheme:light; }
+  body { background:var(--bg); color:var(--fg); font:14px/1.55 var(--mono); max-width:780px; margin:24px auto; padding:0 16px 60px; }
+  h1 { font-size:18px; } a { color:var(--ac2); }
+  button { background:var(--pan); color:var(--fg); border:1px solid var(--bd); border-radius:6px; padding:9px 15px; cursor:pointer; font:inherit; }
+  button:hover { background:#f0f2f4; border-color:var(--ac); } button:disabled { opacity:.45; cursor:default; }
+  .warn-box { border:1px solid var(--ac); background:#fff7ed; border-radius:8px; padding:10px 13px; margin:14px 0; }
+  .field { margin:14px 0; }
+  .field .k { color:var(--mut); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+  .field .v { word-break:break-all; border:1px solid var(--bd); border-radius:6px; padding:8px 9px; background:var(--pan); margin-top:4px; user-select:all; }
+  .secret .v { border-color:var(--bad); background:#fff5f5; }
+  table { border-collapse:collapse; width:100%; margin-top:6px; }
+  td, th { border:1px solid var(--bd); padding:6px 9px; text-align:left; } td.addr { word-break:break-all; }
+  th { background:var(--pan); color:var(--mut); font-weight:700; font-size:12px; }
+  .ok{color:var(--good)} .err{color:var(--bad)} .dim{color:var(--mut)}
+  code { background:var(--pan); border:1px solid var(--bd); border-radius:4px; padding:1px 5px; font-size:.92em; }
+</style>
+</head>
+<body>
+<h1>bitcoin-kernel / browser-node — keys <span class="dim">(generate a testnet4 wallet)</span></h1>
+<p class="dim">Generate a fresh <b>testnet4</b> wallet in your browser. This is the one page in this project that touches
+<b>private keys</b> — everything else is watch-only/verification. The seed is created locally (<code>crypto.getRandomValues</code>)
+and never leaves this tab. Take the <b>account tpub</b> to the <a href="spv.html">watch-only wallet</a>, and fund a receiving
+address from a testnet4 faucet. <a href="how-it-works.html">how it works</a></p>
+
+<div class="warn-box dim">
+⚠ <b>Testnet4 only — throwaway.</b> Do not use for real funds. The seed below is your wallet; anyone who sees it controls it.
+This is a demo: keys live only in this tab and vanish on reload (write the seed down if you want to keep the wallet).</div>
+
+<p><button id="gen">▶ Generate a new wallet</button> <span id="status" class="dim"></span></p>
+
+<div id="out"></div>
+
+<p class="dim" style="margin-top:18px; border-top:1px solid var(--bd); padding-top:10px">
+Path: BIP84 <code>m/84'/1'/0'</code> (testnet account), receiving chain <code>0/i</code>, P2WPKH. Private/hardened BIP32 keygen
+uses the bundled WASM secp (<code>pointFromScalar</code> / <code>privateAdd</code>), verified against BIP32 spec vector 1
+(<code>test-keygen.mjs</code>). Next: a BIP39 mnemonic for the backup, and signing/spending.</p>
+
+<script type="module">
+import { deriveAccountNode } from './wasm-keygen.js';
+import { Bip32 } from './engine/codec/wallet.js';
+import { ScriptEngine } from './engine/codec/script.js';
+
+const $ = (id) => document.getElementById(id);
+let se = null;
+
+async function loadEngine() {
+  const jl = (n) => fetch(`./engine/schema/${n}.jsonld`).then(r => r.json());
+  const [script, chain] = await Promise.all([jl('script'), jl('chain')]);
+  se = ScriptEngine.fromSchemas(script, chain, 'btc:testnet4');
+}
+
+function generate() {
+  const seed = crypto.getRandomValues(new Uint8Array(32));
+  const seedHex = Array.from(seed, (b) => b.toString(16).padStart(2, '0')).join('');
+  const node = deriveAccountNode(seed, { coin: 1, version: 0x043587cf });   // testnet tpub
+  const tpub = Bip32.encode(node);
+  let rows = '';
+  for (let i = 0; i < 5; i++) {
+    const addr = se.classify(Bip32.scriptPubKey(Bip32.derivePath(node, `0/${i}`), 'p2wpkh')).address;
+    rows += `<tr><td>0/${i}</td><td class="addr">${addr}</td></tr>`;
+  }
+  $('out').innerHTML =
+    `<div class="field secret"><div class="k">seed — secret, back this up</div><div class="v">${seedHex}</div></div>` +
+    `<div class="field"><div class="k">account tpub — paste into the watch-only wallet (spv.html)</div><div class="v">${tpub}</div></div>` +
+    `<div class="field"><div class="k">receiving addresses — fund one from a testnet4 faucet</div>` +
+    `<table><tr><th style="width:70px">path</th><th>address (P2WPKH)</th></tr>${rows}</table></div>`;
+  $('status').innerHTML = '<span class="ok">✓ wallet generated (in this tab only)</span>';
+}
+
+$('gen').onclick = generate;
+await loadEngine();
+$('status').textContent = 'engine ready — press Generate';
+</script>
+</body>
+</html>
