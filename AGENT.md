@@ -69,13 +69,13 @@ engine (used inside the worker). Pure-JS fallback exists.
 | `tip.html` | ✅ | Follows the live testnet4 **header** tip: sync then `tail()`, validating each new header (PoW, BIP94, linkage), reorg-aware. Header-level, not full blocks. |
 | `verify.html` | ✅ | Verifies the **assumeUTXO snapshot** (Core `dumptxoutset`, 14.1M coins) by streaming it through the SwiftSync accumulator → commitment `af37b01d…`, holding 32 bytes. Data source is a link param (`?url=` HTTP / `?magnet=` WebTorrent). |
 | `fullchain.html` | 🟡 | Streams blocks genesis→N through the accumulator (set-consistency), sourced from a **local block-server** (`tools/block-server.mjs`, not click-and-run). Reached 30k in-browser. |
-| `mesh.html` | 🟡 | **Browser↔browser block propagation.** Two tabs become Bitcoin peers over WebRTC (no server in the data path); "Seed 5000" pulls 5000 real blocks from the network (via the bridge) and relays them to the peer, validated (structure + PoW) on both ends. |
+| `mesh.html` | 🟡 | **Browser↔browser block propagation.** N tabs become Bitcoin peers over WebRTC (no server in the data path) and form a **full mesh**; "Seed N" (`?blocks=`) pulls real blocks from the network (via the bridge) and relays them across the mesh, validated (structure + PoW) on every peer; received blocks are **gossiped onward** (seen-set dedup). `?gossip=1` sends each block to one neighbor so the mesh carries it multi-hop. Staged to 25k blocks; oversized blocks (>200 KB, e.g. testnet4 ~70k+) are skipped pending chunking. |
 | `how-it-works.html` | ✅ | Narrative blog post with SVG diagrams. |
 
 **URL params (shared):** `?signal=wss://<pod>/.webrtc` (WebRTC signaling) · `?room=<hex>`
 (`[a-f0-9]{8,128}`) · `?bridge=ws://host:8334` (WS bridge) · `?replay=1` (node/fullnode: re-watch
 the genesis→tip header climb) · mesh `?bridgeRoom=<hex>` (the seed's network source room) · mesh
-`?blocks=N` (seed count, default 5000).
+`?blocks=N` (seed count, default 5000) · mesh `?gossip=1` (source sends to one neighbor; the mesh gossips it onward).
 
 ---
 
@@ -85,8 +85,9 @@ the genesis→tip header climb) · mesh `?bridgeRoom=<hex>` (the seed's network 
   waitFor / collect / close`.
 - **`peer-rtc.js` (`RtcPeer`)** — same API over a WebRTC data channel to `bridge-webrtc.mjs`
   (offerer; non-trickle ICE; room handshake).
-- **`peer-mesh.js` (`MeshPeer`)** — browser↔browser; role (offerer/answerer) decided by join order
-  in the room; speaks engine-encoded Bitcoin messages; `onMessage(decodedMsg)`.
+- **`peer-mesh.js` (`MeshPeer`)** — browser↔browser, **N-peer full mesh**: on join, offer to every
+  existing peer and answer every later joiner. `send()` broadcasts; `forward()` re-broadcasts to all
+  but the sender (gossip); `sendToOne()` for gossip mode; `onPeers(count)` reports the live count.
 - **`live-feed.js`** — `connect({bridgeUrl | signalUrl, room, schemas, vectors, persist})` picks
   WsPeer vs RtcPeer; `syncToTip` (one-shot), `tail` (follow + reorgs).
 - **`node-worker.js`** — Web Worker validation core. RPC handlers: `init, followRange, checkpoint,
@@ -133,7 +134,9 @@ use **non-trickle ICE** (candidates bundled into the SDP). See `memory: jss-webr
 `follow-node-test`, `snapshot-node-test`, `wasm-secp-test`, `swiftsync-test`,
 `tools/swiftsync-hints`. **Network/transport tests** (need the bridge / a peer, run manually):
 `test-webrtc-bridge.mjs` (browser-equiv ↔ bridge ↔ TCP handshake), `test-mesh.mjs` (peer→peer block
-relay), `test-paginate.mjs` (getheaders pagination to 5000), `live-node-test.mjs`.
+relay), `test-paginate.mjs` (getheaders pagination to 5000), `test-mesh-npeer.mjs` (3-peer full mesh +
+broadcast), `test-mesh-multihop.mjs` (A→B→C line, multi-hop), `test-mesh-gossip.mjs` (full mesh,
+source→one→all via gossip), `live-node-test.mjs`.
 
 **Pattern:** prove network-dependent logic **node-side first** (compose `signaling-stub` +
 `bridge-webrtc` + `connectAsOfferer/Answerer`) before shipping the browser equivalent — the browser
@@ -153,8 +156,9 @@ RTCPeerConnection mirrors node-datachannel.
 | assumeUTXO snapshot verification | ✅ | `verify.html` → `af37b01d`, 14.1M coins, 32 bytes. |
 | SwiftSync full-chain (set-consistency) | 🟡 | Node tools + fullchain.html via block-server; not click-and-run in-browser. |
 | WebRTC bridge (reachable anywhere) | ✅ | Signaled by a JSS pod; verified browser↔sandbox over the internet. |
-| **Block propagation (mesh)** | 🟡 | `mesh.html`: browser↔browser, 5000 blocks, **2 peers**, structure+PoW only. |
-| Serve/announce to peers (inv out, getdata serve, multi-hop) | ⛔ | Browser is client-only today; mesh relay is one-directional seed→leech. |
+| **Block propagation (mesh)** | 🟡 | `mesh.html`: browser↔browser **full mesh** (N peers) + **gossip** forwarding (seen-set), staged to 25k blocks; structure+PoW only. |
+| Multi-hop / gossip | ✅ | A block reaches peers the source never sent to (proven node-side A→B→C; visible in-browser with `?gossip=1`). |
+| Serve `getdata` / `inv` request flow between peers | 🟡 | The mesh forwards blocks it receives, but doesn't yet serve arbitrary `getdata` or do `inv`-based requests. |
 | Full-consensus validation of relayed blocks | ⛔ | Mesh validates structure+PoW, not against a UTXO set. |
 
 ---
@@ -163,8 +167,8 @@ RTCPeerConnection mirrors node-datachannel.
 
 **Clean-up / documentation**
 - Reconcile `AGENT.md` (this), `AGENTS.md`, `manifest.json`, `README.md` — single source of truth.
-- `mesh.html` has dead code from the removed single-block demo (`have` map, `inv`/`getdata`
-  handlers, `MSG_BLOCK`) — prune.
+- Oversized-block **chunking**: blocks >200 KB (`MAX_MSG` in mesh.html) are skipped — split them
+  across data-channel messages + reassemble to propagate past testnet4's big-block region (~70k+).
 - Cache strategy: gh-pages serves `max-age=600`; after a deploy, hard-reload. If a **worker**'s API
   changes, version-pin its URL (`node-worker.js?b=BUILD`) to avoid stale-cache `handlers[cmd]` errors.
 
@@ -178,10 +182,10 @@ build: an **SPV wallet riding `tip.html`/`live-feed`** — key mgmt, address der
 compact filters or merkle proofs against the followed headers, build+sign (WASM secp), broadcast a
 `tx` message over the bridge. This is an *app on the node*, deliberately kept out of the node core.
 
-**Propagation (mesh) next steps** — bigger counts (5000 → 10k+, watch the data-channel limits;
-oversized-block chunking is a TODO, see `MAX_MSG` in mesh.html) · **N-peer mesh** (3+ tabs, gossip)
-· **multi-hop** (the leech re-seeds onward) · **full-consensus relay** (validate against the
-UTXO/SwiftSync path before relaying).
+**Propagation (mesh) — done:** N-peer full mesh · gossip forwarding (seen-set) · visible multi-hop
+(`?gossip=1`) · staged `?blocks=` to 25k. **Next:** oversized-block **chunking** (the wall at
+testnet4 ~70k+, multi-MB blocks) to reach the full chain · **full-consensus relay** (validate against
+the UTXO/SwiftSync path before relaying, not just structure+PoW).
 
 **Full validation at scale** — the unsolved core: stream blocks + a SwiftSync **hints** file +
 just-in-time prevouts so the tab validates scripts to the tip without ever holding the full set.
