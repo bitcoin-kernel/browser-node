@@ -26,8 +26,8 @@
 <h1>bitcoin-kernel / browser-node — watch-only SPV wallet <span class="dim">(testnet4)</span></h1>
 <p class="dim">A <b>watch-only</b> wallet: paste an extended public key (<code>tpub…</code> for testnet, <code>xpub…</code> for mainnet)
 and it derives your receiving <b>addresses</b> — <b>no private keys anywhere</b> (this codebase is verification-only). Below,
-it also <b>verifies SPV inclusion proofs</b> (&#9313;). Next: scan the chain for your payments (BIP158 filters) + balance.
-Need an xpub? That'll live on a separate keys page. <a href="how-it-works.html">how it works</a> · <a href="node.html">the node</a></p>
+it <b>verifies SPV inclusion proofs</b> (&#9313;) and <b>scans the chain</b> for your payments + balance (&#9314;).
+Generate your own wallet on <a href="keys.html">the keys page</a>. <a href="how-it-works.html">how it works</a> · <a href="node.html">the node</a></p>
 
 <div class="row"><label style="min-width:120px">extended pubkey</label></div>
 <input id="xkey" spellcheck="false" value="tpubDCxX2sYFS5bDkSe5GKKYHjBW7tgyN1R3UchpLJvdbf54ohxeGRtd8MbDUe1cguVHe4vnK68DsuD5MXjxi9EXx16rb9EnNsaF5KT99CinaJz">
@@ -51,10 +51,21 @@ tree, the root matching the header, and the tx included). In a real wallet the p
 </div>
 <div id="spvout"></div>
 
+<p style="font-weight:700; font-size:15px; margin:28px 0 4px">&#9314; Scan the chain for your payments</p>
+<p class="dim">Watch your first 20 receiving addresses for payments. With no compact-filter peer available, this is a
+<b>full-block scan</b> over the bridge from a start height to the tip — flat memory, cheap for a recent range (first run
+syncs headers, ~15s, then cached). Fund <code>0/0</code> from a faucet, set the start height near when you funded, and Scan. (Needs the bridge.)</p>
+<div class="row">
+  <button id="scan">&#9656; Scan for payments</button>
+  <span class="dim">from height <input id="start" type="number" placeholder="tip&minus;200" min="1" style="width:100px"></span>
+  <span id="scanstatus" class="dim"></span>
+</div>
+<div id="scanout"></div>
+
 <p class="dim" style="margin-top:18px; border-top:1px solid var(--bd); padding-top:10px">
 Watch-only, BIP32 (BIP84 <code>m/84'/net'/0'</code> account · receiving chain <code>0/i</code>, P2WPKH). Derivation verified
-against the BIP84 vector (<code>test-spv-derive.mjs</code>); SPV proof verification against a real block (<code>test-spv-proof.mjs</code>).
-The default value is an <b>example</b> testnet key. Next: chain scanning (BIP158) for payments + balance.</p>
+against the BIP84 vector (<code>test-spv-derive.mjs</code>); SPV proof against a real block (<code>test-spv-proof.mjs</code>); scan
+against the network (<code>test-scan.mjs</code>). The default key is an <b>example</b> — generate your own on <a href="keys.html">the keys page</a>.</p>
 
 <script type="module">
 import { Bip32 } from './engine/codec/wallet.js';
@@ -62,9 +73,14 @@ import { ScriptEngine } from './engine/codec/script.js';
 import { Codec } from './engine/codec/codec.js';
 import { SpvEngine } from './engine/codec/spv.js';
 import { dsha256, hexToBytes, bytesToHex } from './engine/codec/hash.js';
+import { connect as liveConnect, syncToTip } from './live-feed.js';
 
 const $ = (id) => document.getElementById(id);
-let seTestnet = null, seMainnet = null, codec = null, spv = null, blockCache = null;
+let seTestnet = null, seMainnet = null, codec = null, spv = null, blockCache = null, schemas = null, vectors = null;
+const q = new URLSearchParams(location.search);
+const signalUrl = q.get('signal') || 'wss://melvincarvalho.com/.webrtc';
+const bridgeRoom = q.get('bridgeRoom') || 'b17c0192abad1deacafe';   // the bridge's room (network source for the scan)
+const MSG_WITNESS_BLOCK = 1073741826;
 
 async function loadEngines() {
   const jl = (n) => fetch(`./engine/schema/${n}.jsonld`).then(r => r.json());
@@ -73,6 +89,8 @@ async function loadEngines() {
   seMainnet = ScriptEngine.fromSchemas(script, chain, 'btc:mainnet');
   codec = new Codec(core, proof, p2p);
   spv = SpvEngine.fromSchemas(codec, validate);
+  schemas = { core, proof, p2p, chain, validate };
+  vectors = await (await fetch('./data/testnet4.json')).json();
 }
 
 function derive() {
@@ -128,6 +146,44 @@ async function verifyInclusion() {
   $('spvstatus').innerHTML = r.ok ? '<span class="ok">&check; included</span>' : '<span class="err">&times; failed</span>';
 }
 $('verify').onclick = verifyInclusion;
+
+// ── ③ Scan the chain for payments to your addresses ──
+async function scanChain() {
+  const xkey = $('xkey').value.trim();
+  const node = Bip32.decode(xkey);
+  const setS = (m, c = '') => $('scanstatus').innerHTML = `<span class="${c}">${m}</span>`;
+  if (!node) { setS('derive a valid xpub/tpub first', 'err'); return; }
+  const se = xkey.startsWith('tpub') ? seTestnet : seMainnet;
+  $('scan').disabled = true; $('scanout').innerHTML = '';
+  const watch = new Map();   // scriptPubKey -> { path, addr }
+  for (let i = 0; i < 20; i++) { const spk = Bip32.scriptPubKey(Bip32.derivePath(node, `0/${i}`), 'p2wpkh'); watch.set(spk, { path: `0/${i}`, addr: se.classify(spk).address }); }
+  let session = null;
+  try {
+    setS('connecting + syncing headers (first time ~15s; cached after)…', 'warn');
+    session = await liveConnect({ signalUrl, room: bridgeRoom, schemas, vectors, log: (m) => setS(m, 'warn'), persist: true });
+    await syncToTip(session);
+    const tip = session.store.height;
+    const start = Math.max(1, Math.min(tip, parseInt($('start').value, 10) || Math.max(1, tip - 200)));
+    const utxos = []; let balance = 0; const BATCH = 50; const peer = session.peer;
+    for (let h = start; h <= tip; h += BATCH) {
+      const hashes = []; for (let k = 0; k < BATCH && h + k <= tip; k++) hashes.push(session.codec.blockHash(session.store.headerAt(h + k)));
+      peer.send('getdata', { items: hashes.map((hash) => ({ type: MSG_WITNESS_BLOCK, hash })) });
+      await peer.collect('block', hashes.length, { onItem: (msg) => {
+        const block = msg.payload, height = session.store.heightOf(session.codec.blockHash(block.header));
+        for (const tx of block.transactions) { const txid = session.codec.txid(tx); tx.outputs.forEach((o, vout) => { if (watch.has(o.scriptPubKey)) { utxos.push({ height, txid, vout, value: o.value, ...watch.get(o.scriptPubKey) }); balance += o.value; } }); }
+      }, timeoutMs: 40000 });
+      setS(`scanning #${Math.min(h + BATCH - 1, tip)} / #${tip} — found ${utxos.length}`, 'warn');
+    }
+    peer.close();
+    const rows = utxos.map((u) => `<tr><td>${u.path}</td><td class="addr">${u.addr}</td><td>#${u.height}</td><td>${u.value.toLocaleString()}</td></tr>`).join('');
+    $('scanout').innerHTML = utxos.length
+      ? `<p class="dim" style="margin-top:8px"><b>balance: ${(balance / 1e8).toLocaleString()} tBTC</b> (${balance.toLocaleString()} sats) · ${utxos.length} output(s) in #${start}…#${tip}</p><table><tr><th>path</th><th>address</th><th>block</th><th>value (sats)</th></tr>${rows}</table>`
+      : `<p class="dim" style="margin-top:8px">no payments to your first 20 addresses in #${start}…#${tip}. Fund <code>0/0</code> from a testnet4 faucet, then set the start height near when you funded.</p>`;
+    setS(utxos.length ? `&check; balance ${(balance / 1e8).toLocaleString()} tBTC` : '&check; scan complete — nothing found', utxos.length ? 'ok' : 'dim');
+  } catch (e) { setS('scan error: ' + e.message + ' — is the bridge running?', 'err'); try { session?.peer?.close(); } catch {} }
+  $('scan').disabled = false;
+}
+$('scan').onclick = scanChain;
 
 await loadEngines();
 $('status').textContent = 'engine ready — press Derive';
