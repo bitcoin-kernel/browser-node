@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { Bip32 } from './engine/codec/wallet.js';
 import { ScriptEngine } from './engine/codec/script.js';
-import { hmacSha512, hash160, bytesToHex } from './engine/codec/hash.js';
+import { hmacSha512, hash160, bytesToHex, sha256 } from './engine/codec/hash.js';
 
 const D = new URL('./', import.meta.url);
 const jl = async (n) => JSON.parse(await readFile(new URL(`engine/schema/${n}.jsonld`, D), 'utf8'));
@@ -41,5 +41,11 @@ const EXPECT = { '0/0': 'bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu', '0/1': 'bc
 let ok = xpub.startsWith('xpub6CatWdiZiodmU');
 console.log('mnemonic → account xpub:', xpub.slice(0, 18) + '…', ok ? '✓' : '✗');
 for (const [path, want] of Object.entries(EXPECT)) { const got = se.classify(Bip32.scriptPubKey(Bip32.derivePath(node, path), 'p2wpkh')).address; const pass = got === want; ok &&= pass; console.log(`  ${path}  ${got}  ${pass ? '✓' : '✗ ' + want}`); }
-console.log(ok ? '\n✅ BIP39 import (mnemonic → seed → BIP84 account) matches the vector — keys.html can import mnemonics' : '\n❌ mismatch');
+// entropy → mnemonic (the generate path), against BIP39 vectors
+const WORDS = (await readFile(new URL('data/bip39-english.txt', D), 'utf8')).trim().split('\n');
+const e2m = (ent) => { const CS = (ent.length * 8) / 32, cs = sha256(ent), bits = []; for (const b of ent) for (let i = 7; i >= 0; i--) bits.push((b >> i) & 1); for (let i = 0; i < CS; i++) bits.push((cs[i >> 3] >> (7 - (i & 7))) & 1); const out = []; for (let i = 0; i < bits.length; i += 11) { let idx = 0; for (let j = 0; j < 11; j++) idx = (idx << 1) | bits[i + j]; out.push(WORDS[idx]); } return out.join(' '); };
+const hx = (s) => Uint8Array.from(s.match(/../g).map((b) => parseInt(b, 16)));
+for (const [e, want] of [['00000000000000000000000000000000', MNEMONIC], ['7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f', 'legal winner thank year wave sausage worth useful legal winner thank yellow']]) { const got = e2m(hx(e)); const pass = got === want; ok &&= pass; console.log(`  entropy ${e.slice(0, 8)}… → mnemonic ${pass ? '✓' : '✗ ' + got}`); }
+
+console.log(ok ? '\n✅ BIP39 verified: import (mnemonic→seed→addresses) + generate (entropy→mnemonic) match the vectors' : '\n❌ mismatch');
 process.exit(ok ? 0 : 1);

@@ -30,8 +30,8 @@ and never leaves this tab. Take the <b>account tpub</b> to the <a href="spv.html
 address from a testnet4 faucet. <a href="how-it-works.html">how it works</a></p>
 
 <div class="warn-box dim">
-⚠ <b>Testnet4 only — throwaway.</b> Do not use for real funds. The seed below is your wallet; anyone who sees it controls it.
-This is a demo: keys live only in this tab and vanish on reload (write the seed down if you want to keep the wallet).</div>
+⚠ <b>Testnet4 only — throwaway.</b> Do not use for real funds. The secret below (mnemonic or seed) is your wallet; anyone who sees it controls it.
+This is a demo: keys live only in this tab and vanish on reload (write it down if you want to keep the wallet).</div>
 
 <p><button id="gen">▶ Generate a new wallet</button> <span id="status" class="dim"></span></p>
 <p class="dim" style="margin-top:4px">…or <b>import</b> an existing <b>BIP39 mnemonic</b> (from Electrum, Sparrow, a hardware wallet…) to derive its testnet4 account:</p>
@@ -43,11 +43,11 @@ This is a demo: keys live only in this tab and vanish on reload (write the seed 
 <p class="dim" style="margin-top:18px; border-top:1px solid var(--bd); padding-top:10px">
 Path: BIP84 <code>m/84'/1'/0'</code> (testnet account), receiving chain <code>0/i</code>, P2WPKH. Private/hardened BIP32 keygen
 uses the bundled WASM secp (<code>pointFromScalar</code> / <code>privateAdd</code>), verified against BIP32 spec vector 1
-(<code>test-keygen.mjs</code>). <b>BIP39 import</b> (mnemonic → seed via PBKDF2) verified against the BIP84 vector
-(<code>test-bip39.mjs</code>) — no wordlist needed; generating a mnemonic (entropy → words) would need one. Next: signing/spending.</p>
+(<code>test-keygen.mjs</code>). <b>BIP39</b> verified against the test vectors (<code>test-bip39.mjs</code>): <b>Generate</b> makes a 12-word mnemonic, or
+<b>Import</b> one from any wallet — both derive the same testnet4 account. Next: signing/spending.</p>
 
 <script type="module">
-import { deriveAccountNode, mnemonicToSeed } from './wasm-keygen.js';
+import { deriveAccountNode, mnemonicToSeed, generateMnemonic } from './wasm-keygen.js';
 import { Bip32 } from './engine/codec/wallet.js';
 import { ScriptEngine } from './engine/codec/script.js';
 
@@ -76,9 +76,9 @@ function showWallet(seed, backup) {
   $('status').innerHTML = `<span class="ok">✓ ${backup.kind} wallet (in this tab only)</span>`;
 }
 
-function generate() {
-  const seed = crypto.getRandomValues(new Uint8Array(32));
-  showWallet(seed, { kind: 'generated', k: 'seed — secret, back this up', v: Array.from(seed, (b) => b.toString(16).padStart(2, '0')).join('') });
+async function generate() {
+  const mnemonic = generateMnemonic(128);   // 12-word BIP39
+  showWallet(await mnemonicToSeed(mnemonic, ''), { kind: 'generated', k: 'mnemonic — secret, back this up (BIP39 — works in any wallet)', v: mnemonic });
 }
 
 async function importMnemonic() {
