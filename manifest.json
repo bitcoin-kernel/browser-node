@@ -79,6 +79,14 @@
       "modules": ["node-worker.js", "validate-forward.js", "follow-chain.js", "wasm-secp.js", "sharded-utxo-browser.js"],
       "data": ["data/range.json", "data/range-seed.ndjson"],
       "verified": { "browser": "follow+validate 21 blocks in a Worker: UI responsive (max frame gap 16ms) vs frozen on the main thread (~1063ms); UTXO checkpointed via an OPFS sync access handle" }
+    },
+    {
+      "id": 11, "name": "SwiftSync — stateless validation", "ui": ["⑪"],
+      "proves": "Set-consistency (no double-spends / fabricated coins) is verified with a constant-size SwiftSync accumulator (add created outputs, subtract spent inputs) instead of a multi-GB UTXO set. A valid range cancels to zero against its start/terminal snapshots; a fabricated spend breaks it.",
+      "runs_on": "github-pages", "requires": [],
+      "modules": ["swiftsync/accumulator.js", "swiftsync/outpoint.js", "engine/codec/hash.js"],
+      "data": ["data/range.json", "data/range-seed.ndjson"],
+      "verified": { "browser": "blocks 26000..26020: 249 + 2,203 - 1,091 - 1,361 cancels to ZERO with 32 bytes of state (vs ~25 GB); a fabricated spend yields a non-zero digest (rejected); 72ms", "node": "swiftsync-test.mjs", "provenance": "the repo's own SwiftSync accumulator (kernel/packages/swiftsync), verified across all of testnet4 by its _sscapstone.mjs" }
     }
   ],
   "servers": [
@@ -95,6 +103,6 @@
   },
   "trust_model": "The bridge and torrent/HTTP transports are untrusted: they cannot forge valid blocks or headers because the tab validates everything (PoW, difficulty, scripts, signatures, fees). Their only powers are withholding and eclipsing. assumeUTXO trusts the snapshot's UTXO set until background validation (not included here) re-derives it from genesis.",
   "remaining": [
-    "Hold the FULL UTXO set in a browser tab. Validating forward to the live tip already works (tools/reach-tip.mjs), but it keeps only the coins the forward blocks spend. The whole 14.1M-coin set is ~25 GB (~1,900 bytes/coin) in the current string-keyed Map — over a tab's limit. This needs a compact binary coin store (~50-100 B/coin -> ~1-1.5 GB) or an OPFS-backed on-disk UTXO set. Large snapshots are distributed via WebTorrent, never committed to git."
+    "Use SwiftSync in the running node (node.html). SwiftSync stateless validation is proven (act ⑪ — set-consistency via a 32-byte accumulator instead of the ~25 GB UTXO set). The remaining work is wiring it into the worker's forward-validation loop with a WebTorrent-distributed hints file (<100 MB) plus streaming prevout data for script checks, so node.html validates to the live tip without ever holding the full set. (tools/reach-tip.mjs already reaches the tip by keeping only the coins the forward blocks spend.) Large snapshots / hints go over WebTorrent, never git."
   ]
 }

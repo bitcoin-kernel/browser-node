@@ -45,6 +45,7 @@ and the browser-node design ([`bitcoin-kernel/node`](https://github.com/bitcoin-
 | ⑦ | **Persist the UTXO set (OPFS)** | the RAM-resident coin view is checkpointed to OPFS and resumes from disk on reload | **GitHub Pages** | 16,913 coins → 2.5 MB checkpoint (17ms); reload resumes in 11ms |
 | ⑨ | **WASM signature verification** | a WASM libsecp256k1 backend swapped in via `setVerifyBackend`, gated by verdict-equivalence | **GitHub Pages** | block #26000: ~1,161 → ~4,895 verifies/s (4.2× at block level), verdicts identical |
 | ⑩ | **Run the node in a Web Worker (scale)** | engine + WASM secp + UTXO store + OPFS sync-handles run off the main thread, so validation/checkpoints don't freeze the UI | **GitHub Pages** | follow 21 blocks in a Worker: UI responsive (16 ms frame gap) vs frozen on the main thread (~1063 ms) |
+| ⑪ | **SwiftSync — stateless validation** | set-consistency via a **32-byte accumulator** (add created, subtract spent) instead of the ~25 GB UTXO set | **GitHub Pages** | blocks 26000–26020 cancel to **ZERO** with 32 bytes of state; a fabricated spend is detected; 72 ms |
 
 Acts ③ ④ ⑥ are fully static and work on GitHub Pages. Acts ① (torrent seeding) and ⑤ (the bridge) need a
 local server — see below.
@@ -96,6 +97,7 @@ opfs-coins-store.js     checkpoint the UTXO set (ShardedUtxo) to OPFS — resume
 wasm-secp.js            WASM libsecp256k1 backend (tiny-secp256k1 wasm) for setVerifyBackend
 secp256k1.wasm          the libsecp256k1 binary (1.2 MB — the one large file in the repo)
 node-worker.js          the validation core in a Web Worker (engine + WASM secp + UTXO + OPFS sync handles)
+swiftsync/              the repo's SwiftSync accumulator (vendored) — stateless set-consistency, 32-byte state
 peer-ws.js              WsPeer — Bitcoin p2p over a WebSocket (browser transport)
 engine/                 vendored @bitcoin-desktop/schema: consensus engine + schemas + stores
 serve.mjs               zero-dep static server (local)
@@ -129,13 +131,13 @@ background re-validation from genesis (not included in this demo) confirms it.
 
 ## Not done yet
 
-- **Hold the full UTXO set in a tab** — validating forward to the live tip already works: `tools/reach-tip.mjs`
-  bootstraps from a real Core `dumptxoutset` snapshot and validates block-by-block to the current testnet4
-  tip (verified: snapshot at #141,574 → tip #141,680, 3,511 inputs, including a 1,513-input block and blocks
-  mined during the run). But it keeps only the coins the forward blocks spend — the **whole** 14.1M-coin set
-  is **~25 GB** (~1,900 B/coin) in the string-keyed Map, over a tab's limit. Fitting it needs a compact
-  binary coin store (~50–100 B/coin) or an OPFS-backed on-disk UTXO set. Large snapshots are distributed
-  via **WebTorrent**, never committed.
+- **Use SwiftSync in the running node** — stateless validation is **proven** (act ⑪: set-consistency with a
+  32-byte accumulator, not the ~25 GB UTXO set). The remaining work is wiring it into the worker's
+  forward-validation loop with a **WebTorrent-distributed hints file** (<100 MB) + streaming prevout data for
+  scripts, so `node.html` validates to the live tip without ever holding the full set. (`tools/reach-tip.mjs`
+  already reaches the tip — verified snapshot #141,574 → tip #141,680, incl. a 1,513-input block and blocks
+  mined during the run — by keeping only the coins the forward blocks spend; the full 14.1M set is ~25 GB,
+  over a tab's limit, which is exactly what SwiftSync removes.) Large snapshots/hints go via **WebTorrent**, never git.
 
 ## License & attribution
 

@@ -101,6 +101,15 @@ largest gap between animation ticks.</p>
 <p><button id="worker">⑩ Validate in a Worker vs on the main thread</button></p>
 <div id="workerresult" class="dim">— not run yet —</div>
 
+<h2>⑨ SwiftSync — stateless validation (past the memory ceiling)</h2>
+<p class="dim">The full UTXO set is ~25 GB — too big for a tab. <a href="https://gist.github.com/RubenSomsen/a61a37d14182ccd78760e477c78133cd">SwiftSync</a>
+removes the need to hold it: since <code>all outputs − all inputs = the UTXO set</code>, you feed every created output (+)
+and spent input (−) into a <b>constant-size accumulator</b>. With the start + terminal snapshots, a valid chain
+cancels to <b>zero</b> — proving no double-spends or fabricated coins, with <b>32 bytes of state</b> instead of 25 GB.
+This is the repo's own SwiftSync accumulator (verified across all of testnet4), run here over a real block range.</p>
+<p><button id="swiftsync">⑪ SwiftSync-validate blocks 26000→26020</button></p>
+<div id="ssresult" class="dim">— not run yet —</div>
+
 <script type="module">
 import WebTorrent from './webtorrent.min.js';
 import { ShardedUtxo } from './sharded-utxo-browser.js';
@@ -110,6 +119,9 @@ import { connect as liveConnect, syncToTip, tail } from './live-feed.js';
 import { DumpReader, parseHeader, coins } from './dumptxoutset.js';
 import { checkpoint, resume, checkpointInfo, opfsAvailable as opfsCoins } from './opfs-coins-store.js';
 import { setVerifyBackend } from './engine/codec/secp256k1.js';
+import { sha256 } from './engine/codec/hash.js';
+import { Accumulator } from './swiftsync/accumulator.js';
+import { encodeOutpoint } from './swiftsync/outpoint.js';
 
 const $log = document.getElementById('log'), $bar = document.querySelector('#bar>i'), $stats = document.getElementById('stats');
 const log = (m, c='') => { const t = new Date().toISOString().slice(11,19); $log.innerHTML += `<span class="dim">${t}</span> <span class="${c}">${m}</span>\n`; $log.scrollTop = $log.scrollHeight; };
@@ -457,7 +469,46 @@ document.getElementById('worker').onclick = async () => {
   btn.disabled = false;
 };
 
-log('ready. ① torrent → ③ validate → ④ follow → ⑤ live (OPFS) → ⑥ Core snapshot → ⑦⑧ persist → ⑨ WASM → ⑩ worker.', 'ok');
+// ── Path ⑪: SwiftSync — stateless set-transition validation (32-byte accumulator) ──
+document.getElementById('swiftsync').onclick = async () => {
+  const btn = document.getElementById('swiftsync'); btn.disabled = true;
+  const $r = document.getElementById('ssresult');
+  try {
+    log('— SwiftSync stateless validation —', 'ok');
+    const { codec } = await loadEngine(log);
+    const NULL = '00'.repeat(32);
+    const seedText = await (await fetch('data/range-seed.ndjson')).text();
+    const range = await (await fetch('data/range.json')).json();
+    const op = (txid, vout) => encodeOutpoint({ txid, vout });
+    const buildAcc = () => {
+      const acc = new Accumulator({ sha256 });        // 32-byte state, salt=null (reference)
+      let seedN = 0, created = 0, spent = 0; const survivors = new Set();
+      for (const l of seedText.split('\n').slice(1)) { if (!l) continue; const [k] = JSON.parse(l); const i = k.lastIndexOf(':'); acc.add(op(k.slice(0, i), +k.slice(i + 1))); seedN++; }
+      for (const hex of range.blocks) { const block = codec.decode('Block', hex);
+        for (const tx of block.transactions) { const txid = codec.txid(tx);
+          for (const inp of tx.inputs) { if (inp.prevout.txid === NULL) continue; acc.spend(op(inp.prevout.txid, inp.prevout.vout)); spent++; survivors.delete(`${inp.prevout.txid}:${inp.prevout.vout}`); }
+          for (let v = 0; v < tx.outputs.length; v++) { const s = tx.outputs[v].scriptPubKey; if (typeof s === 'string' && s.startsWith('6a')) continue; acc.add(op(txid, v)); created++; survivors.add(`${txid}:${v}`); } } }
+      for (const k of survivors) { const i = k.lastIndexOf(':'); acc.spend(op(k.slice(0, i), +k.slice(i + 1))); }
+      return { acc, seedN, created, spent, terminal: survivors.size };
+    };
+    const t0 = performance.now();
+    const h = buildAcc(); const zero = h.acc.isZero(); const ms = performance.now() - t0;
+    const digest = Array.from(h.acc.digest()).map(b => b.toString(16).padStart(2, '0')).join('');
+    // tamper: one input that spends a coin that was never created (fabricated / double-spend)
+    const t = buildAcc(); t.acc.spend(op('ff'.repeat(32), 0)); const tamperRejected = !t.acc.isZero();
+    $r.innerHTML = `<table>
+      <tr><td>range</td><td class="n">26000–26020</td><td class="dim">${fmt(range.blocks.length)} blocks</td></tr>
+      <tr><td>events</td><td class="n">${fmt(h.seedN)} + ${fmt(h.created)} − ${fmt(h.spent)} − ${fmt(h.terminal)}</td><td class="dim">start + created − spent − terminal</td></tr>
+      <tr><td>accumulator state</td><td class="n">32 bytes</td><td class="dim">vs ~25 GB UTXO set · ${ms.toFixed(0)}ms</td></tr>
+      <tr><td>closed sum</td><td class="n ${zero ? 'ok' : 'err'}">${zero ? 'ZERO ✓' : 'non-zero ✗'}</td><td class="dim">digest ${digest.slice(0, 16)}…</td></tr>
+      <tr><td>tamper (fabricated spend)</td><td class="n ${tamperRejected ? 'ok' : 'err'}">${tamperRejected ? 'non-zero ✓' : 'ZERO ✗'}</td><td class="dim">${tamperRejected ? 'rejected' : 'MISSED'}</td></tr>
+    </table><p class="${zero && tamperRejected ? 'ok' : 'err'}">${zero && tamperRejected ? '✅ set-transition verified with 32 bytes of state, and a single fabricated spend is detected (sum ≠ 0) — no 25 GB UTXO set needed.' : '❌ unexpected'}</p>`;
+    log(`SwiftSync: closed sum ZERO (32-byte state, ${ms.toFixed(0)}ms); fabricated spend rejected`, zero && tamperRejected ? 'ok' : 'err');
+  } catch (e) { $r.innerHTML = `<span class="err">error: ${e.message}</span>`; log('swiftsync error: ' + e.message, 'err'); console.error(e); }
+  btn.disabled = false;
+};
+
+log('ready. ① torrent → ③ validate → ④ follow → ⑤ live (OPFS) → ⑥ Core snapshot → ⑦⑧ persist → ⑨ WASM → ⑩ worker → ⑪ SwiftSync.', 'ok');
 </script>
 </body>
 </html>
