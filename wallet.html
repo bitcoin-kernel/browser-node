@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>bitcoin-kernel/browser-node — wallet (sign a testnet4 spend)</title>
+<style>
+  :root { --bg:#fff; --fg:#16181d; --mut:#5b6470; --bd:#e6e8eb; --pan:#fafbfc; --ac:#e8830c; --ac2:#0969da; --good:#1a7f37; --bad:#cf222e; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; color-scheme:light; }
+  body { background:var(--bg); color:var(--fg); font:14px/1.55 var(--mono); max-width:780px; margin:24px auto; padding:0 16px 60px; }
+  h1 { font-size:18px; } h2 { font-size:14px; color:var(--mut); text-transform:uppercase; letter-spacing:.04em; margin:22px 0 8px; } a { color:var(--ac2); }
+  button { background:var(--pan); color:var(--fg); border:1px solid var(--bd); border-radius:6px; padding:9px 15px; cursor:pointer; font:inherit; }
+  button:hover { background:#f0f2f4; border-color:var(--ac); } button:disabled { opacity:.45; cursor:default; }
+  .warn-box { border:1px solid var(--ac); background:#fff7ed; border-radius:8px; padding:10px 13px; margin:14px 0; }
+  input { width:100%; box-sizing:border-box; border:1px solid var(--bd); border-radius:6px; padding:8px 9px; font:inherit; background:var(--pan); color:var(--fg); }
+  label { display:block; color:var(--mut); font-size:12px; text-transform:uppercase; letter-spacing:.04em; margin:10px 0 3px; }
+  .row { display:flex; gap:10px; } .row > div { flex:1; }
+  .field { margin:12px 0; }
+  .field .k { color:var(--mut); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+  .field .v { word-break:break-all; border:1px solid var(--bd); border-radius:6px; padding:8px 9px; background:var(--pan); margin-top:4px; user-select:all; }
+  .secret .v { border-color:var(--bad); background:#fff5f5; }
+  .ok{color:var(--good)} .err{color:var(--bad)} .dim{color:var(--mut)}
+  code { background:var(--pan); border:1px solid var(--bd); border-radius:4px; padding:1px 5px; font-size:.92em; }
+  fieldset { border:1px solid var(--bd); border-radius:8px; padding:4px 14px 14px; margin:0; }
+</style>
+</head>
+<body>
+<h1>bitcoin-kernel / browser-node — wallet <span class="dim">(sign a testnet4 spend)</span></h1>
+<p class="dim">Build and <b>sign</b> a P2WPKH spending transaction in your browser. The signing key never leaves this tab.
+Load a <a href="keys.html">wallet mnemonic</a>, point at a UTXO funding your <code>0/0</code> address (find it with the
+<a href="spv.html">watch-only scan</a>), and this page produces a signed, broadcast-ready transaction — verified against the
+node's own BIP143 verifier before you ever see it. <a href="how-it-works.html">how it works</a></p>
+
+<div class="warn-box dim">
+⚠ <b>Testnet4 only — throwaway.</b> Your mnemonic is your wallet; it stays in this tab and vanishes on reload.
+This slice <b>signs but does not broadcast</b> — copy the raw transaction and push it with any testnet4 node / explorer, or wait for the broadcast slice.</div>
+
+<h2>1 · Load wallet</h2>
+<input id="mnemonic" spellcheck="false" placeholder="twelve word BIP39 mnemonic …">
+<p style="margin-top:8px"><button id="load">▶ Load wallet</button> <span id="loadStatus" class="dim"></span></p>
+<div id="wallet"></div>
+
+<h2>2 · Spend</h2>
+<fieldset id="spendBox" disabled>
+  <div class="row">
+    <div><label>UTXO txid</label><input id="utxoTxid" spellcheck="false" placeholder="funding transaction id"></div>
+    <div style="flex:0 0 90px"><label>vout</label><input id="utxoVout" inputmode="numeric" value="0"></div>
+  </div>
+  <label>UTXO value (sats) — the full amount of that output</label><input id="utxoValue" inputmode="numeric" placeholder="100000">
+  <label>send to (testnet4 address)</label><input id="dest" spellcheck="false" placeholder="tb1q…">
+  <div class="row">
+    <div><label>amount to send (sats)</label><input id="amount" inputmode="numeric" placeholder="90000"></div>
+    <div style="flex:0 0 130px"><label>fee (sats)</label><input id="fee" inputmode="numeric" value="200"></div>
+  </div>
+  <p style="margin-top:12px"><button id="build">▶ Build &amp; sign</button> <span id="buildStatus" class="dim"></span></p>
+</fieldset>
+<div id="out"></div>
+
+<p class="dim" style="margin-top:18px; border-top:1px solid var(--bd); padding-top:10px">
+Signs the input at <code>m/84'/1'/0'/0/0</code> (P2WPKH, BIP143). Change returns to the same <code>0/0</code> address.
+The signature is produced by the bundled WASM secp and the finished transaction is checked by the node's own
+<code>ScriptInterpreter.verifyInput</code> before display — the same code path that validates blocks. Proven end-to-end in
+<code>test-sign.mjs</code> / <code>test-wallet.mjs</code>. Next: broadcast over the bridge, multi-UTXO coin selection.</p>
+
+<script type="module">
+import { mnemonicToSeed, deriveSigningKey, signEcdsa, toDer } from './wasm-keygen.js';
+import { Codec } from './engine/codec/codec.js';
+import { ScriptEngine, addressToScript } from './engine/codec/script.js';
+import { ScriptInterpreter } from './engine/codec/interpreter.js';
+import { hash160, bytesToHex } from './engine/codec/hash.js';
+
+const $ = (id) => document.getElementById(id);
+let codec = null, se = null, interp = null, key = null, myScriptPubKey = null;
+
+async function loadEngine() {
+  const jl = (n) => fetch(`./engine/schema/${n}.jsonld`).then(r => r.json());
+  const [script, chain, core, proof, p2p] = await Promise.all(['script','chain','core','proof','p2p'].map(jl));
+  se = ScriptEngine.fromSchemas(script, chain, 'btc:testnet4');
+  codec = new Codec(core, proof, p2p);
+  interp = new ScriptInterpreter(codec, se);
+}
+
+async function loadWallet() {
+  const m = $('mnemonic').value.trim().toLowerCase().split(/\s+/).filter(Boolean).join(' ');
+  const words = m ? m.split(' ').length : 0;
+  if (![12, 15, 18, 21, 24].includes(words)) { $('loadStatus').innerHTML = '<span class="err">expects a 12/15/18/21/24-word BIP39 mnemonic</span>'; return; }
+  const seed = await mnemonicToSeed(m, '');
+  key = deriveSigningKey(seed, { coin: 1, change: 0, index: 0 });   // m/84'/1'/0'/0/0, with private key
+  myScriptPubKey = '0014' + bytesToHex(hash160(key.pub));
+  const address = se.classify(myScriptPubKey).address;
+  $('wallet').innerHTML =
+    `<div class="field"><div class="k">your receiving address (0/0) — fund this on testnet4, then spend below</div><div class="v">${address}</div></div>`;
+  $('spendBox').disabled = false;
+  $('loadStatus').innerHTML = '<span class="ok">✓ wallet loaded (key in this tab only)</span>';
+}
+
+function buildAndSign() {
+  $('out').innerHTML = ''; $('buildStatus').textContent = '';
+  try {
+    if (!key) throw new Error('load a wallet first');
+    const txid = $('utxoTxid').value.trim().toLowerCase();
+    const vout = parseInt($('utxoVout').value, 10);
+    const utxoValue = parseInt($('utxoValue').value, 10);
+    const dest = $('dest').value.trim();
+    const amount = parseInt($('amount').value, 10);
+    const fee = parseInt($('fee').value, 10);
+    if (!/^[0-9a-f]{64}$/.test(txid)) throw new Error('UTXO txid must be 64 hex chars');
+    if (!Number.isInteger(vout) || vout < 0) throw new Error('vout must be a non-negative integer');
+    for (const [n, v] of [['UTXO value', utxoValue], ['amount', amount], ['fee', fee]]) if (!Number.isInteger(v) || v < 0) throw new Error(`${n} must be a non-negative integer (sats)`);
+    const destScript = addressToScript(dest, se.params);
+    if (!destScript) throw new Error('destination is not a valid testnet4 address');
+    const change = utxoValue - amount - fee;
+    if (change < 0) throw new Error(`amount + fee (${amount + fee}) exceeds the UTXO value (${utxoValue})`);
+
+    const outputs = [{ value: amount, scriptPubKey: destScript }];
+    if (change > 0) outputs.push({ value: change, scriptPubKey: myScriptPubKey });   // change back to 0/0
+    const tx = {
+      version: 2, marker: 0, flag: 1,
+      inputs: [{ prevout: { txid, vout }, scriptSig: '', sequence: 0xffffffff }],
+      outputs, witness: [[]], lockTime: 0,
+    };
+
+    // BIP143 sighash over the implied P2PKH scriptCode → sign → witness [sig+SIGHASH_ALL, pubkey]
+    const scriptCode = '76a914' + bytesToHex(hash160(key.pub)) + '88ac';
+    const sighash = interp.sighashWitnessV0(tx, 0, scriptCode, utxoValue, 0x01);
+    tx.witness[0] = [bytesToHex(toDer(signEcdsa(sighash, key.priv))) + '01', bytesToHex(key.pub)];
+
+    // verify against the node's OWN verifier before showing anything
+    const prevout = { scriptPubKey: myScriptPubKey, value: utxoValue };
+    const r = interp.verifyInput(tx, 0, prevout, [prevout]);
+    if (r.ok !== true) throw new Error('engine rejected the signed input: ' + JSON.stringify(r));
+    const rawHex = codec.encodeHex('Transaction', tx);
+    const finalTxid = codec.txid(tx);
+
+    const changeLine = change > 0 ? `<tr><td class="dim">change → your 0/0</td><td>${change} sats</td></tr>` : `<tr><td class="dim">change</td><td>none</td></tr>`;
+    $('out').innerHTML =
+      `<div class="field"><div class="k">✓ verified — signed transaction (${rawHex.length / 2} bytes)</div>` +
+      `<table style="border-collapse:collapse;width:100%;margin:6px 0"><tr><td class="dim" style="width:140px">to ${dest.slice(0, 12)}…</td><td>${amount} sats</td></tr>${changeLine}<tr><td class="dim">fee</td><td>${fee} sats</td></tr></table></div>` +
+      `<div class="field"><div class="k">txid</div><div class="v">${finalTxid}</div></div>` +
+      `<div class="field secret"><div class="k">raw transaction — broadcast with any testnet4 node / explorer (broadcast slice coming)</div><div class="v">${rawHex}</div></div>`;
+    $('buildStatus').innerHTML = '<span class="ok">✓ signed &amp; verified under the node BIP143</span>';
+  } catch (e) {
+    $('buildStatus').innerHTML = `<span class="err">${e.message}</span>`;
+  }
+}
+
+$('load').onclick = loadWallet;
+$('build').onclick = buildAndSign;
+await loadEngine();
+$('loadStatus').textContent = 'engine ready — load a wallet';
+</script>
+</body>
+</html>
