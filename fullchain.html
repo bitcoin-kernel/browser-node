@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>bitcoin-kernel/browser-node — full-chain SwiftSync run (testnet4)</title>
+<style>
+  :root { --bg:#fff; --fg:#16181d; --mut:#5b6470; --bd:#e6e8eb; --pan:#fafbfc; --ac:#e8830c; --ac2:#0969da; --good:#1a7f37; --bad:#cf222e; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; color-scheme:light; }
+  body { background:var(--bg); color:var(--fg); font:14px/1.5 var(--mono); max-width:860px; margin:24px auto; padding:0 16px; }
+  h1 { font-size:18px; } a { color:var(--ac2); }
+  button { background:var(--pan); color:var(--fg); border:1px solid var(--bd); border-radius:6px; padding:9px 16px; cursor:pointer; font:inherit; }
+  button:hover { background:#f0f2f4; border-color:var(--ac); } button:disabled { opacity:.45; cursor:default; }
+  input { font:inherit; border:1px solid var(--bd); border-radius:6px; padding:7px 9px; width:90px; }
+  .grid { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin:14px 0; }
+  .card { border:1px solid var(--bd); border-radius:8px; padding:10px 12px; background:var(--pan); }
+  .card .k { color:var(--mut); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+  .card .v { font-size:20px; margin-top:3px; }
+  #bar { height:8px; background:var(--bd); border-radius:4px; overflow:hidden; margin:10px 0; }
+  #bar>i { display:block; height:100%; width:0; background:var(--good); transition:width .2s; }
+  #log { background:var(--pan); border:1px solid var(--bd); border-radius:6px; padding:12px; height:150px; overflow:auto; white-space:pre-wrap; margin-top:12px; }
+  .ok{color:var(--good)} .warn{color:var(--ac)} .err{color:var(--bad)} .dim{color:var(--mut)}
+</style>
+</head>
+<body>
+<h1>full-chain SwiftSync run <span class="dim">— validate from genesis with 32 bytes</span></h1>
+<p class="dim">Stream blocks <b>from genesis</b> through the SwiftSync accumulator in a <b>Web Worker</b> — add every created
+output, subtract every spent input. The residual at the end is the UTXO-set commitment; matching an
+independently-computed value validates the whole range's set-consistency holding only <b>32 bytes</b>.
+<a href="index.html">← the acts</a> · <a href="node.html">running node →</a></p>
+
+<p>validate genesis → height <input id="to" value="30000"> <button id="go">▶ Run</button>
+<span class="dim">(needs <code>node tools/block-server.mjs</code> + bitcoind)</span></p>
+<div id="bar"><i></i></div>
+<div class="grid">
+  <div class="card"><div class="k">height</div><div class="v" id="h">—</div></div>
+  <div class="card"><div class="k">data streamed</div><div class="v" id="mb">—</div></div>
+  <div class="card"><div class="k">accumulator state</div><div class="v">32 bytes</div></div>
+</div>
+<div id="verdict" class="dim">— not run yet —</div>
+<div id="log"></div>
+
+<p class="dim" style="margin-top:14px; border-top:1px solid var(--bd); padding-top:10px">
+Verified commitments (independent, from <code>tools/fullchain-node.mjs</code> / <code>tools/swiftsync-commit.mjs</code>):
+genesis→30000 = <code>defbb676…</code>; the full snapshot @141574 = <code>af37b01d…</code>. genesis→30000 is the
+early chain (~166 MB) and runs in the tab in minutes; the full genesis→tip is the same logic but ~GBs of witness
+data — stripping witnesses (not needed for the accumulator) makes it browser-quick, the noted next step.</p>
+
+<script type="module">
+const $ = (id) => document.getElementById(id);
+const log = (m, c='') => { const t = new Date().toISOString().slice(11,19); $('log').innerHTML += `<span class="dim">${t}</span> <span class="${c}">${m}</span>\n`; $('log').scrollTop = $('log').scrollHeight; };
+const fmt = (n) => Number(n).toLocaleString();
+const KNOWN = { 30000: 'defbb6762b26bcef835387771c06e7dba5fbec5b520b464a513922bb6861e24b' };
+
+let _w = null, _id = 0; const _rpc = new Map(); let _prog = null;
+function wcall(cmd, args) {
+  if (!_w) {
+    _w = new Worker('node-worker.js', { type: 'module' });
+    _w.onmessage = (e) => { const d = e.data; if (d.progress) { _prog && _prog(d); return; } const p = _rpc.get(d.id); if (!p) return; _rpc.delete(d.id); d.ok ? p.resolve(d.result) : p.reject(new Error(d.error)); };
+    _w.onerror = (e) => log('worker error: ' + (e.message || e.filename), 'err');
+  }
+  const id = ++_id; _w.postMessage({ id, cmd, args });
+  return new Promise((res, rej) => _rpc.set(id, { resolve: res, reject: rej }));
+}
+
+$('go').onclick = async () => {
+  $('go').disabled = true; $('verdict').innerHTML = '';
+  const to = Math.max(1, +$('to').value || 30000);
+  try {
+    log(`— full-chain run: genesis → ${fmt(to)} —`, 'ok');
+    log('loading engine in worker…'); await wcall('init');
+    _prog = (d) => { if (d.progress !== 'fullchain') return; $('h').textContent = '#' + fmt(d.height); $('mb').textContent = d.mb + ' MB'; $('bar').firstElementChild.style.width = (100 * d.height / d.to).toFixed(1) + '%'; };
+    const r = await wcall('fullchain', { to });
+    _prog = null; $('bar').firstElementChild.style.width = '100%';
+    const want = KNOWN[to];
+    const ok = want ? r.digest === want : null;
+    $('verdict').innerHTML = `<table>
+      <tr><td>genesis → </td><td class="v">#${fmt(r.to)}</td></tr>
+      </table><p>residual digest <code>${r.digest.slice(0,32)}…</code> · ${r.mb} MB · ${(r.ms/1000).toFixed(0)}s · 32-byte state</p>` +
+      (want ? `<p class="${ok?'ok':'err'}">${ok ? `✅ matches the independent commitment for #${fmt(to)} — the whole chain genesis→${fmt(to)} validated with 32 bytes of state` : '❌ digest mismatch'}</p>`
+            : `<p class="dim">(no stored commitment for #${fmt(to)} — digest shown; compare against tools/fullchain-node.mjs ${to})</p>`);
+    log(`done: genesis→${fmt(to)} = ${r.digest.slice(0,16)}… (${r.mb} MB, ${(r.ms/1000).toFixed(0)}s)${want ? (ok?' ✓ verified':' ✗ mismatch'):''}`, ok===false?'err':'ok');
+  } catch (e) { $('verdict').innerHTML = `<span class="err">error: ${e.message}</span> <span class="dim">(is block-server.mjs running on :8090?)</span>`; log('error: ' + e.message, 'err'); console.error(e); }
+  $('go').disabled = false;
+};
+log('idle — start tools/block-server.mjs, then ▶ Run.', 'dim');
+</script>
+</body>
+</html>

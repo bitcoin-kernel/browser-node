@@ -89,6 +89,7 @@ npm test   # validate #26000, adversarial tamper, follow 26000–26020, parse + 
 ```
 index.html              the ten acts, explained (the showcase)
 node.html               the capstone: a running-node dashboard (orchestrates the worker + live feed)
+fullchain.html          full-chain SwiftSync run: stream blocks from genesis through the accumulator (32-byte state)
 sharded-utxo-browser.js ShardedUtxo — coin view sharded past V8's 16.7M Map cap
 validate-forward.js     load engine + coin view, validate one block forward
 follow-chain.js         applyBlock() + followChain() — validate a run, update the UTXO set

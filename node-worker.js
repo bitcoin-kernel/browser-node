@@ -128,7 +128,25 @@ async function swiftsyncHints() {
   return { blocks: blocks.length, surviving, hintsBytes, perBlock: +(hintsBytes / blocks.length).toFixed(1), reconstructed: utxo.size, verified: acc.isZero(), chainMB: +((hintsBytes / blocks.length * 141680) / 1048576).toFixed(1), ms: performance.now() - t0 };
 }
 
-const handlers = { init, followRange, checkpoint, resume, swiftsync, scaleAccumulate, swiftsyncHints };
+// Full-chain run, in the tab: stream blocks genesis..to from the local block-server
+// through the accumulator, holding only 32 bytes. The residual at `to` is the UTXO
+// commitment — compare to an independently-computed value to validate the whole
+// chain's set-consistency.
+async function fullchain({ to = 30000, base = 'http://localhost:8090' } = {}) {
+  const acc = new Accumulator({ sha256 });
+  const txidOf = (tx) => codec.txid(tx);
+  const CHUNK = 500;
+  const t0 = performance.now(); let bytes = 0;
+  for (let lo = 1; lo <= to; lo += CHUNK) {
+    const count = Math.min(CHUNK, to - lo + 1);
+    const text = await (await fetch(`${base}/blocks/${lo}/${count}`)).text();
+    for (const hex of text.split('\n')) { if (!hex) continue; bytes += hex.length / 2; applyBlocks([codec.decode('Block', hex)], { txidOf, acc }); }
+    self.postMessage({ progress: 'fullchain', height: Math.min(lo + count - 1, to), to, mb: +(bytes / 1048576).toFixed(0) });
+  }
+  return { to, digest: Array.from(acc.digest()).map((b) => b.toString(16).padStart(2, '0')).join(''), mb: +(bytes / 1048576).toFixed(0), ms: performance.now() - t0 };
+}
+
+const handlers = { init, followRange, checkpoint, resume, swiftsync, scaleAccumulate, swiftsyncHints, fullchain };
 self.onmessage = async (e) => {
   const { id, cmd, args } = e.data;
   try { self.postMessage({ id, ok: true, result: await handlers[cmd](args) }); }
