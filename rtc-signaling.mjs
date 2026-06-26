@@ -50,25 +50,33 @@ export function connectAsOfferer({ signalUrl, room, iceServers = DEFAULT_ICE, la
 
 // Passive side: join the room and answer any offer. Calls onChannel(dc, {pc})
 // for each established peer. De-dupes repeated offers (re-announce) by sender.
-export function connectAsAnswerer({ signalUrl, room, iceServers = DEFAULT_ICE, onChannel, log = () => {} } = {}) {
-  const ws = new WebSocket(signalUrl);
+// Stays in the room indefinitely: keepalive pings + auto-reconnect on drop, so a
+// long-running bridge survives idle periods and transient signaling outages.
+export function connectAsAnswerer({ signalUrl, room, iceServers = DEFAULT_ICE, onChannel, reconnectMs = 3000, pingMs = 25000, log = () => {} } = {}) {
+  let ws = null, stopped = false, ping = null;
   const handled = new Set();
-  ws.on('open', () => { log(`answerer joined room ${room}`); ws.send(JSON.stringify({ type: 'announce', resource: room, offers: [] })); });
-  ws.on('message', async (data) => {
-    let m; try { m = JSON.parse(data.toString()); } catch { return; }
-    if (m.type !== 'offer' || m.resource !== room || typeof m.sdp !== 'string') return;
-    const key = `${m.from}:${m.offer_id}`;
-    if (handled.has(key)) return;            // duplicate re-announce of an offer we're already handling
-    handled.add(key);
-    const pc = new nodeDataChannel.PeerConnection('answerer', { iceServers });
-    pc.onDataChannel((dc) => onChannel(dc, { pc }));
-    pc.onStateChange((s) => { if (s === 'disconnected' || s === 'failed' || s === 'closed') { try { pc.close(); } catch {} } });
-    try {
-      pc.setRemoteDescription(m.sdp, 'offer');          // libdatachannel auto-creates the answer
-      const answer = await gatherComplete(pc);
-      ws.send(JSON.stringify({ type: 'answer', resource: room, to: m.from, offer_id: m.offer_id, sdp: answer.sdp }));
-    } catch (e) { log('answer failed: ' + e.message); handled.delete(key); }
-  });
-  ws.on('error', (e) => log('signaling error: ' + e.message));
-  return { ws, close: () => { try { ws.close(); } catch {} } };
+
+  const connect = () => {
+    ws = new WebSocket(signalUrl);
+    ws.on('open', () => { log(`answerer joined room ${room}`); ws.send(JSON.stringify({ type: 'announce', resource: room, offers: [] })); clearInterval(ping); ping = setInterval(() => { try { ws.ping(); } catch {} }, pingMs); });
+    ws.on('message', async (data) => {
+      let m; try { m = JSON.parse(data.toString()); } catch { return; }
+      if (m.type !== 'offer' || m.resource !== room || typeof m.sdp !== 'string') return;
+      const key = `${m.from}:${m.offer_id}`;
+      if (handled.has(key)) return;          // duplicate re-announce of an offer we're already handling
+      handled.add(key);
+      const pc = new nodeDataChannel.PeerConnection('answerer', { iceServers });
+      pc.onDataChannel((dc) => onChannel(dc, { pc }));
+      pc.onStateChange((s) => { if (s === 'disconnected' || s === 'failed' || s === 'closed') { try { pc.close(); } catch {} } });
+      try {
+        pc.setRemoteDescription(m.sdp, 'offer');        // libdatachannel auto-creates the answer
+        const answer = await gatherComplete(pc);
+        ws.send(JSON.stringify({ type: 'answer', resource: room, to: m.from, offer_id: m.offer_id, sdp: answer.sdp }));
+      } catch (e) { log('answer failed: ' + e.message); handled.delete(key); }
+    });
+    ws.on('error', (e) => log('signaling error: ' + e.message));
+    ws.on('close', () => { clearInterval(ping); handled.clear(); if (!stopped) { log(`signaling closed — reconnecting in ${reconnectMs}ms`); setTimeout(connect, reconnectMs); } });
+  };
+  connect();
+  return { close: () => { stopped = true; clearInterval(ping); try { ws?.close(); } catch {} } };
 }
