@@ -71,6 +71,8 @@ engine (used inside the worker). Pure-JS fallback exists.
 | `fullchain.html` | 🟡 | Streams blocks genesis→N through the accumulator (set-consistency), sourced from a **local block-server** (`tools/block-server.mjs`, not click-and-run). Reached 30k in-browser. |
 | `mesh.html` | 🟡 | **Browser↔browser block propagation.** N tabs become Bitcoin peers over WebRTC (no server in the data path) and form a **full mesh**; "Seed N" (`?blocks=`) pulls real blocks from the network (via the bridge) and relays them across the mesh, validated (structure + PoW) on every peer; received blocks are **gossiped onward** (seen-set dedup). `?gossip=1` sends each block to one neighbor so the mesh carries it multi-hop. Staged to 25k blocks; oversized blocks (>200 KB, e.g. testnet4 ~70k+) are skipped pending chunking. |
 | `how-it-works.html` | ✅ | Narrative blog post with SVG diagrams. |
+| `keys.html` | ✅ | **Generate or import a testnet4 wallet** — the one page with private keys. A 12-word **BIP39** mnemonic (generate, or import from any wallet) → private/hardened BIP32 (WASM secp `pointFromScalar`/`privateAdd`) → account **tpub** + receiving addresses. Throwaway/testnet; keys live only in-tab. |
+| `spv.html` | 🟡 | **Watch-only SPV wallet.** ① derive receiving addresses from an xpub/tpub (`Bip32`); ② **SPV merkle-proof** inclusion (`SpvEngine`, BIP37 proof built from a block); ③ **scan** the chain (full-block, over the bridge) for payments → UTXOs + balance. No private keys. |
 
 **URL params (shared):** `?signal=wss://<pod>/.webrtc` (WebRTC signaling) · `?room=<hex>`
 (`[a-f0-9]{8,128}`) · `?bridge=ws://host:8334` (WS bridge) · `?replay=1` (node/fullnode: re-watch
@@ -95,7 +97,10 @@ the genesis→tip header climb) · mesh `?bridgeRoom=<hex>` (the seed's network 
 - **`validate-forward.js`** (`loadEngine`, `coinviewOf`), **`follow-chain.js`** (`applyBlock`,
   `followChain`), **`sharded-utxo-browser.js`** (`ShardedUtxo`, 64 sub-Maps to beat V8's Map cap),
   **`dumptxoutset.js`** (Core snapshot reader), **`opfs-header-store.js` / `opfs-coins-store.js`**
-  (persistence), **`wasm-secp.js`**.
+  (persistence), **`wasm-secp.js`** (verify backend).
+- **`wasm-keygen.js`** — keys.html only: private/hardened BIP32 via the WASM secp's `pointFromScalar`
+  + `privateAdd` (isolated from the verify path), `mnemonicToSeed` (PBKDF2), `generateMnemonic`
+  (BIP39, bundled wordlist). The only module touching private keys.
 
 **`swiftsync/`** — `accumulator.js` (32-byte homomorphic accumulator, tagged-SHA256 "SwiftSync",
 2×128-bit lanes), `outpoint.js`, `hint.js` (`generateHints`/`reconstructUtxo`, Elias-Fano),
@@ -136,7 +141,11 @@ use **non-trickle ICE** (candidates bundled into the SDP). See `memory: jss-webr
 `test-webrtc-bridge.mjs` (browser-equiv ↔ bridge ↔ TCP handshake), `test-mesh.mjs` (peer→peer block
 relay), `test-paginate.mjs` (getheaders pagination to 5000), `test-mesh-npeer.mjs` (3-peer full mesh +
 broadcast), `test-mesh-multihop.mjs` (A→B→C line, multi-hop), `test-mesh-gossip.mjs` (full mesh,
-source→one→all via gossip), `live-node-test.mjs`.
+source→one→all via gossip), `test-cfilter-probe.mjs` (BIP157 service probe), `test-scan.mjs` (wallet
+scan finds a watched output over the network), `live-node-test.mjs`. **Wallet crypto tests** (no
+network): `test-spv-derive.mjs` (address derivation vs BIP84), `test-spv-proof.mjs` (SPV merkle
+proof vs a real block), `test-keygen.mjs` (private BIP32 vs BIP32 vector 1), `test-bip39.mjs`
+(BIP39 generate + import vs the vectors).
 
 **Pattern:** prove network-dependent logic **node-side first** (compose `signaling-stub` +
 `bridge-webrtc` + `connectAsOfferer/Answerer`) before shipping the browser equivalent — the browser
@@ -177,10 +186,14 @@ RTCPeerConnection mirrors node-datachannel.
 (`data/testnet4.json`), magic, and port (48333). Generalize: a `?network=` param + per-network
 vectors/peers, and a network-agnostic bridge target.
 
-**Wallets on top** — `engine/codec/{wallet,spv,filters,nostr}.js` exist but are unwired. Natural
-build: an **SPV wallet riding `tip.html`/`live-feed`** — key mgmt, address derivation, watch via
-compact filters or merkle proofs against the followed headers, build+sign (WASM secp), broadcast a
-`tx` message over the bridge. This is an *app on the node*, deliberately kept out of the node core.
+**Wallet — built (watch-only + keygen):** `keys.html` (BIP39 generate/import → tpub, `wasm-keygen.js`)
+and `spv.html` (① derive · ② SPV merkle-proof via `SpvEngine` · ③ chain scan → balance, over the
+bridge). Naming: `keys.html` = keys, `spv.html` = watch-only, **`wallet.html` reserved for spending**.
+Honest gaps: no compact-filter/bloom peer reachable (`test-cfilter-probe.mjs`: services `0xc09`), so
+scanning is full-block (cheap for a recent range) and SPV proofs are self-built; generating a mnemonic
+needs the bundled wordlist (`data/bip39-english.txt`). **Next: signing/spending** — the WASM secp
+exposes `sign`/`signSchnorr`; build+sign a tx (PSBT in `wallet.js`), broadcast a `tx` over the bridge.
+`engine/codec/filters.js` (BIP158) and `nostr.js` remain unwired.
 
 **Propagation (mesh) — done:** N-peer full mesh · gossip forwarding (seen-set) · visible multi-hop
 (`?gossip=1`) · staged `?blocks=` to 25k. **Next:** oversized-block **chunking** (the wall at
