@@ -74,6 +74,7 @@ engine (used inside the worker). Pure-JS fallback exists.
 | `how-it-works.html` | ✅ | Narrative blog post with SVG diagrams. |
 | `keys.html` | ✅ | **Generate or import a testnet4 wallet** — the one page with private keys. A 12-word **BIP39** mnemonic (generate, or import from any wallet) → private/hardened BIP32 (WASM secp `pointFromScalar`/`privateAdd`) → account **tpub** + receiving addresses. Throwaway/testnet; keys live only in-tab. |
 | `spv.html` | 🟡 | **Watch-only SPV wallet.** ① derive receiving addresses from an xpub/tpub (`Bip32`); ② **SPV merkle-proof** inclusion (`SpvEngine`, BIP37 proof built from a block); ③ **scan** the chain (full-block, over the bridge) for payments → UTXOs + balance. No private keys. |
+| `mempool.html` | 🟡 | **Watch the unconfirmed mempool for an address** — no explorer API. Connects to a peer over the bridge, listens to the tx relay flow (`inv`→`getdata`→`tx`), decodes each tx itself, and flags outputs paying the watched address → live unconfirmed UTXOs + inbound total. `?address=` prefills + auto-watches. Honest bound: watches the *flow*, can't enumerate the *pool* (no bloom/BIP157 on reachable peers), so it catches payments as they propagate while open. |
 | `wallet.html` | 🟡 | **Sign + broadcast a testnet4 spend.** Load a BIP39 mnemonic → `deriveSigningKey` (private `m/84'/1'/0'/0/0`) → build a P2WPKH spend (UTXO + destination + amount + fee, change back to `0/0`) → BIP143 sighash → WASM secp ECDSA sign → **verified against the node's own `ScriptInterpreter.verifyInput` before display** → raw hex + txid → **Broadcast** announces it to a real testnet4 peer over the bridge (`inv`→`getdata`→`tx`, then re-`getdata` reads mempool accept/reject). Keys live only in-tab. UTXO still hand-entered (next: pull from the spv.html scan). |
 
 **URL params (shared):** `?signal=wss://<pod>/.webrtc` (WebRTC signaling) · `?room=<hex>`
@@ -151,7 +152,8 @@ broadcast), `test-mesh-multihop.mjs` (A→B→C line, multi-hop), `test-mesh-gos
 source→one→all via gossip), `test-cfilter-probe.mjs` (BIP157 service probe), `test-scan.mjs` (wallet
 scan finds a watched output over the network), `test-broadcast.mjs` (announce a signed tx to a real
 peer → it requests via `getdata` → send `tx` → re-`getdata` reads accept/reject; unfunded ⇒ `notfound`),
-`live-node-test.mjs`. **Wallet crypto tests** (no
+`test-mempool.mjs` (live mempool watch: listen to the relay flow + getdata a known txid → decode → output-scan
+matches an unconfirmed payment to a watched address), `live-node-test.mjs`. **Wallet crypto tests** (no
 network): `test-spv-derive.mjs` (address derivation vs BIP84), `test-spv-proof.mjs` (SPV merkle
 proof vs a real block), `test-keygen.mjs` (private BIP32 vs BIP32 vector 1), `test-bip39.mjs`
 (BIP39 generate + import vs the vectors), `test-sign.mjs` (build+sign a P2WPKH input → engine

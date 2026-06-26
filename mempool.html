@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>bitcoin-kernel/browser-node — mempool watch (testnet4)</title>
+<style>
+  :root { --bg:#fff; --fg:#16181d; --mut:#5b6470; --bd:#e6e8eb; --pan:#fafbfc; --ac:#e8830c; --ac2:#0969da; --good:#1a7f37; --bad:#cf222e; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; color-scheme:light; }
+  body { background:var(--bg); color:var(--fg); font:14px/1.55 var(--mono); max-width:780px; margin:24px auto; padding:0 16px 60px; }
+  h1 { font-size:18px; } a { color:var(--ac2); }
+  button { background:var(--pan); color:var(--fg); border:1px solid var(--bd); border-radius:6px; padding:9px 15px; cursor:pointer; font:inherit; }
+  button:hover { background:#f0f2f4; border-color:var(--ac); } button:disabled { opacity:.45; cursor:default; }
+  input { font:inherit; border:1px solid var(--bd); border-radius:6px; padding:8px 9px; width:100%; box-sizing:border-box; background:var(--pan); color:var(--fg); }
+  label { color:var(--mut); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+  table { border-collapse:collapse; width:100%; margin-top:14px; }
+  td, th { border:1px solid var(--bd); padding:7px 9px; text-align:left; }
+  th { background:var(--pan); color:var(--mut); font-weight:700; font-size:12px; }
+  td.addr { word-break:break-all; }
+  .stats { display:flex; gap:10px; flex-wrap:wrap; margin:14px 0; }
+  .stat { border:1px solid var(--bd); border-radius:8px; padding:8px 12px; background:var(--pan); min-width:96px; }
+  .stat .n { font-size:20px; } .stat .l { color:var(--mut); font-size:11px; text-transform:uppercase; letter-spacing:.04em; }
+  .ok{color:var(--good)} .err{color:var(--bad)} .dim{color:var(--mut)}
+  .warn-box { border:1px solid var(--ac); background:#fff7ed; border-radius:8px; padding:10px 13px; margin:14px 0; }
+  code { background:var(--pan); border:1px solid var(--bd); border-radius:4px; padding:1px 5px; font-size:.92em; }
+</style>
+</head>
+<body>
+<h1>bitcoin-kernel / browser-node — mempool watch <span class="dim">(testnet4)</span></h1>
+<p class="dim">Watch the <b>unconfirmed</b> mempool for payments to an address — in your browser, with <b>no explorer API</b>.
+This tab connects to a real testnet4 peer over the bridge, listens to the transaction relay flow (<code>inv</code> →
+<code>getdata</code> → <code>tx</code>), decodes each transaction itself, and flags any output paying your address.
+Funds you catch here can be spent in the <a href="wallet.html">wallet</a>. <a href="how-it-works.html">how it works</a> · <a href="spv.html">watch-only</a></p>
+
+<div class="warn-box dim">
+⚠ <b>It watches the flow, it can't dump the pool.</b> The reachable testnet4 peers don't serve BIP37 bloom or BIP157
+compact filters (services <code>0x409</code>/<code>0xc09</code>), so there's no "give me everything paying address X" query.
+This catches payments as they <b>propagate to us</b> while the tab is open — so open it, then trigger the payment. A payment
+already broadcast and finished propagating may not reappear until it confirms (then <a href="spv.html">the scan</a> finds it).</div>
+
+<label for="addr">watch address (testnet4)</label>
+<div style="display:flex; gap:8px; margin:4px 0 0">
+  <input id="addr" spellcheck="false" placeholder="tb1q…" value="tb1q9t92n2d4h3hafpkaeknvrj4xsj6u9we4lkczqm">
+  <button id="watch" style="white-space:nowrap">▶ Watch</button>
+</div>
+<p id="status" class="dim" style="margin-top:8px">engine loading…</p>
+
+<div class="stats">
+  <div class="stat"><div class="n" id="seen">0</div><div class="l">txs seen</div></div>
+  <div class="stat"><div class="n" id="hits">0</div><div class="l">payments to you</div></div>
+  <div class="stat"><div class="n ok" id="bal">0</div><div class="l">sats inbound</div></div>
+</div>
+
+<div id="out"></div>
+
+<p class="dim" style="margin-top:18px; border-top:1px solid var(--bd); padding-top:10px">
+Each announced txid is fetched and decoded with the node's own codec, then its outputs are matched against the watched
+<code>scriptPubKey</code> — the same decode+scan as <a href="spv.html">the confirmed-chain scan</a>, run live on the mempool.
+Proven against the real testnet4 mempool in <code>test-mempool.mjs</code>. Next: feed caught UTXOs straight into the wallet's spend form.</p>
+
+<script type="module">
+import { connect as liveConnect } from './live-feed.js';
+import { ScriptEngine, addressToScript } from './engine/codec/script.js';
+
+const $ = (id) => document.getElementById(id);
+const q = new URLSearchParams(location.search);
+const signalUrl = q.get('signal') || 'wss://melvincarvalho.com/.webrtc';
+const bridgeRoom = q.get('bridgeRoom') || 'b17c0192abad1deacafe';
+const qAddr = q.get('address') || q.get('addr');   // ?address=tb1q… prefills + auto-watches
+const MSG_TX = 1;
+
+let se = null, schemas = null, vectors = null;
+let session = null, watching = false;
+const requested = new Set();     // txids already getdata'd (dedupe)
+const found = new Map();         // "txid:vout" → { value, address }
+let seen = 0;
+
+async function loadEngine() {
+  const jl = (n) => fetch(`./engine/schema/${n}.jsonld`).then(r => r.json());
+  const [script, chain, core, proof, p2p, validate] = await Promise.all(['script','chain','core','proof','p2p','validate'].map(jl));
+  se = ScriptEngine.fromSchemas(script, chain, 'btc:testnet4');
+  schemas = { core, proof, p2p, chain, validate };
+  vectors = await fetch('./data/testnet4.json').then(r => r.json());
+}
+
+function render() {
+  $('seen').textContent = seen;
+  $('hits').textContent = found.size;
+  let total = 0; for (const m of found.values()) total += m.value;
+  $('bal').textContent = total.toLocaleString();
+  if (!found.size) { $('out').innerHTML = ''; return; }
+  let rows = '';
+  for (const [key, m] of found) {
+    const [txid, vout] = key.split(':');
+    rows += `<tr><td>${m.value.toLocaleString()}</td><td class="addr">${txid}:${vout}</td></tr>`;
+  }
+  $('out').innerHTML = `<table><tr><th style="width:120px">value (sats)</th><th>outpoint (unconfirmed UTXO)</th></tr>${rows}</table>`;
+}
+
+function scanTx(tx) {
+  seen++;
+  const txid = session.codec.txid(tx);
+  tx.outputs.forEach((o, vout) => {
+    if (watchSet.has(o.scriptPubKey)) {
+      const key = `${txid}:${vout}`;
+      if (!found.has(key)) found.set(key, { value: o.value, address: watchSet.get(o.scriptPubKey) });
+    }
+  });
+  render();
+}
+
+let watchSet = new Map();
+
+async function watch() {
+  if (watching) { watching = false; try { session?.peer?.close(); } catch {} $('watch').textContent = '▶ Watch'; $('status').innerHTML = '<span class="dim">stopped</span>'; return; }
+  const addr = $('addr').value.trim();
+  const spk = addressToScript(addr, se.params);
+  if (!spk) { $('status').innerHTML = '<span class="err">not a valid testnet4 address</span>'; return; }
+  watchSet = new Map([[spk, addr]]);
+  found.clear(); requested.clear(); seen = 0; render();
+  watching = true; $('watch').textContent = '■ Stop'; $('addr').disabled = true;
+  try {
+    session = await liveConnect({ signalUrl, room: bridgeRoom, schemas, vectors, log: (m) => { $('status').innerHTML = `<span class="dim">${m}</span>`; } });
+    $('status').innerHTML = `<span class="ok">watching ${addr.slice(0, 12)}… — listening to the mempool relay flow</span>`;
+    loop();
+  } catch (e) {
+    watching = false; $('watch').textContent = '▶ Watch'; $('addr').disabled = false;
+    $('status').innerHTML = `<span class="err">connect failed: ${e.message}</span>`;
+  }
+}
+
+// Stream the relay: re-arm waitFor after each message (synchronously, so no inbound
+// is dropped). inv(MSG_TX) → getdata; tx → decode + scan; quiet windows just time out.
+async function loop() {
+  while (watching) {
+    let msg;
+    try { msg = await session.peer.waitFor(['inv', 'tx'], 30000); }
+    catch { continue; }   // no relay in the window — keep listening
+    if (!watching) break;
+    if (msg.command === 'inv') {
+      for (const it of (msg.payload?.items ?? [])) {
+        if (it.type === MSG_TX && !requested.has(it.hash)) { requested.add(it.hash); session.peer.send('getdata', { items: [{ type: MSG_TX, hash: it.hash }] }); }
+      }
+    } else if (msg.command === 'tx') {
+      try { scanTx(msg.payload); } catch { /* undecodable relay item, skip */ }
+    }
+  }
+}
+
+$('watch').onclick = watch;
+if (qAddr) $('addr').value = qAddr;
+await loadEngine();
+$('status').textContent = 'engine ready — press Watch';
+if (qAddr) watch();   // ?address= → start watching immediately
+</script>
+</body>
+</html>
