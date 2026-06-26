@@ -91,9 +91,10 @@ function render() {
   let rows = '';
   for (const [key, m] of found) {
     const [txid, vout] = key.split(':');
-    rows += `<tr><td>${m.value.toLocaleString()}</td><td class="addr">${txid}:${vout}</td></tr>`;
+    const spend = `wallet.html?fundAddr=${encodeURIComponent(m.address)}&amp;txid=${txid}&amp;vout=${vout}&amp;value=${m.value}`;
+    rows += `<tr><td>${m.value.toLocaleString()}</td><td class="addr">${txid}:${vout}</td><td><a href="${spend}">spend →</a></td></tr>`;
   }
-  $('out').innerHTML = `<table><tr><th style="width:120px">value (sats)</th><th>outpoint (unconfirmed UTXO)</th></tr>${rows}</table>`;
+  $('out').innerHTML = `<table><tr><th style="width:120px">value (sats)</th><th>outpoint (unconfirmed UTXO)</th><th style="width:80px"></th></tr>${rows}</table>`;
 }
 
 function scanTx(tx) {

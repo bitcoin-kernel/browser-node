@@ -175,9 +175,9 @@ async function scanChain() {
       setS(`scanning #${Math.min(h + BATCH - 1, tip)} / #${tip} — found ${utxos.length}`, 'warn');
     }
     peer.close();
-    const rows = utxos.map((u) => `<tr><td>${u.path}</td><td class="addr">${u.addr}</td><td>#${u.height}</td><td>${u.value.toLocaleString()}</td></tr>`).join('');
+    const rows = utxos.map((u) => { const spend = `wallet.html?fundAddr=${encodeURIComponent(u.addr)}&amp;txid=${u.txid}&amp;vout=${u.vout}&amp;value=${u.value}`; return `<tr><td>${u.path}</td><td class="addr">${u.addr}</td><td>#${u.height}</td><td>${u.value.toLocaleString()}</td><td><a href="${spend}">spend →</a></td></tr>`; }).join('');
     $('scanout').innerHTML = utxos.length
-      ? `<p class="dim" style="margin-top:8px"><b>balance: ${(balance / 1e8).toLocaleString()} tBTC</b> (${balance.toLocaleString()} sats) · ${utxos.length} output(s) in #${start}…#${tip}</p><table><tr><th>path</th><th>address</th><th>block</th><th>value (sats)</th></tr>${rows}</table>`
+      ? `<p class="dim" style="margin-top:8px"><b>balance: ${(balance / 1e8).toLocaleString()} tBTC</b> (${balance.toLocaleString()} sats) · ${utxos.length} output(s) in #${start}…#${tip}</p><table><tr><th>path</th><th>address</th><th>block</th><th>value (sats)</th><th></th></tr>${rows}</table>`
       : `<p class="dim" style="margin-top:8px">no payments to your first 20 addresses in #${start}…#${tip}. Fund <code>0/0</code> from a testnet4 faucet, then set the start height near when you funded.</p>`;
     setS(utxos.length ? `&check; balance ${(balance / 1e8).toLocaleString()} tBTC` : '&check; scan complete — nothing found', utxos.length ? 'ok' : 'dim');
   } catch (e) { setS('scan error: ' + e.message + ' — is the bridge running?', 'err'); try { session?.peer?.close(); } catch {} }

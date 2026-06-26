@@ -64,7 +64,8 @@ The signature is produced by the bundled WASM secp and the finished transaction 
 tx out to several testnet4 peers over the bridge (<code>inv</code> → <code>getdata</code> → <code>tx</code>, the bridge dialing
 a random peer per connection) and stops once one admits it — so a single peer missing an unconfirmed parent can't sink it.
 Proven end-to-end in <code>test-sign.mjs</code> / <code>test-wallet.mjs</code> / <code>test-broadcast.mjs</code> /
-<code>test-broadcast-multi.mjs</code>. Next: pull UTXOs from the spv.html scan, multi-UTXO coin selection.</p>
+<code>test-broadcast-multi.mjs</code>. The UTXO fields here are pre-filled when you arrive from a <b>spend →</b> link on the
+<a href="mempool.html">mempool watch</a> or <a href="spv.html">SPV scan</a>. Next: multi-UTXO coin selection.</p>
 
 <script type="module">
 import { mnemonicToSeed, deriveSigningKey, signEcdsa, toDer } from './wasm-keygen.js';
@@ -115,7 +116,7 @@ async function loadWallet() {
   $('wallet').innerHTML =
     `<div class="field"><div class="k">your receiving addresses — fund one on testnet4, then spend it below</div>` +
     `<table style="border-collapse:collapse;width:100%"><tr><th style="width:70px;border:1px solid var(--bd);padding:6px 9px">path</th><th style="border:1px solid var(--bd);padding:6px 9px">address (P2WPKH)</th></tr>${rows}</table></div>`;
-  $('fundAddr').value = at(0, 0).address;   // default the spend to 0/0
+  if (!$('fundAddr').value) $('fundAddr').value = at(0, 0).address;   // default to 0/0 (unless prefilled from a link)
   $('spendBox').disabled = false;
   $('loadStatus').innerHTML = '<span class="ok">✓ wallet loaded (key in this tab only)</span>';
 }
@@ -208,10 +209,20 @@ async function broadcast() {
   }
 }
 
+// Prefill the spend form from query params — mempool.html / spv.html link a found
+// UTXO straight here: ?fundAddr=&txid=&vout=&value= (&dest=&amount=&fee= optional).
+function prefillFromQuery() {
+  const map = { fundAddr: 'fundAddr', txid: 'utxoTxid', vout: 'utxoVout', value: 'utxoValue', dest: 'dest', amount: 'amount', fee: 'fee' };
+  let any = false;
+  for (const [param, id] of Object.entries(map)) { const v = q.get(param); if (v != null && v !== '') { $(id).value = v; any = true; } }
+  if (any) $('loadStatus').innerHTML = '<span class="dim">UTXO pre-filled from a link — load your wallet to sign it</span>';
+}
+
 $('load').onclick = loadWallet;
 $('build').onclick = buildAndSign;
+prefillFromQuery();
 await loadEngine();
-$('loadStatus').textContent = 'engine ready — load a wallet';
+if (!q.get('txid')) $('loadStatus').textContent = 'engine ready — load a wallet';
 </script>
 </body>
 </html>
