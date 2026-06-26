@@ -25,31 +25,29 @@
 <body>
 <h1>bitcoin-kernel / browser-node — mesh <span class="dim">(block propagation · PoC)</span></h1>
 <p class="dim"><b>Open this page in two tabs</b> (or send the link to a friend). The two tabs become Bitcoin peers to each other
-over <b>WebRTC — no server in the data path</b> — meeting in a room on a signaling server. Then one tab <b>relays a block</b> to
-the other: it announces it (<code>inv</code>), the other requests it (<code>getdata</code>), receives the block, and
-<b>validates it</b> (proof-of-work + merkle root). Or hit <b>Seed 1000</b>: one tab pulls <b>1000 real blocks</b> from the
-network (via the bridge) and propagates them to the other, which validates every one. That's block propagation at volume, in a browser mesh.
+over <b>WebRTC — no server in the data path</b> — meeting in a room on a signaling server. Hit <b>Seed 1000</b> in one tab:
+it pulls <b>1000 real blocks</b> from the network (via the bridge) and <b>propagates them to the other tab</b> over the channel,
+which <b>validates every one</b> (proof-of-work + merkle root). That's block propagation at volume, in a browser mesh.
 <a href="node.html">the node</a> · <a href="how-it-works.html">how it works</a></p>
 
 <p>
   <button id="connect">▶ Connect to the mesh</button>
   <button id="seed" disabled>🌱 Seed 1000 blocks from the network → peer</button>
-  <button id="share" disabled>📤 Relay block #26,000</button>
   <span id="status" class="dim">idle</span>
 </p>
 
 <div class="grid">
   <div class="card"><div class="k"><span class="dot" id="dot"></span>mesh</div><div class="v" id="mesh">—</div><div class="s" id="role">browser ↔ browser</div></div>
   <div class="card"><div class="k">seeded from network</div><div class="v" id="seeded">—</div><div class="s">bridge → mesh</div></div>
-  <div class="card"><div class="k">blocks received + validated</div><div class="v" id="relayed">0</div><div class="s">inv → getdata → block</div></div>
+  <div class="card"><div class="k">blocks received + validated</div><div class="v" id="relayed">0</div><div class="s">from the mesh peer</div></div>
   <div class="card"><div class="k">last block</div><div class="v" id="last">—</div><div class="s" id="lasthash">PoW + merkle</div></div>
 </div>
 <div id="log"></div>
 
 <p class="dim" style="margin-top:14px; border-top:1px solid var(--bd); padding-top:10px">
 PoC scope: <b>Seed 1000</b> pulls real blocks from the network (via the bridge) and relays them to the peer, each validated for
-structure + proof-of-work (no UTXO set, so not full-consensus). <b>Relay block #26,000</b> shows the <code>inv→getdata→block</code>
-request flow on a bundled block. Next: relay across more than two peers, and stream the full chain. Default room <code>c0ffeebabe123456</code>; override with
+structure + proof-of-work (no UTXO set, so not full-consensus). Next: relay across more than two peers, and stream the full chain.
+Default room <code>c0ffeebabe123456</code>; override with
 <code>?room=&lt;hex&gt;</code> and the signaling server with <code>?signal=wss://your.pod/.webrtc</code>.</p>
 
 <script type="module">
@@ -154,8 +152,8 @@ $('connect').onclick = async () => {
     peer = new MeshPeer(p2p, codec, { log, onMessage, onOpen: (role) => {
       $('dot').classList.add('live'); $('mesh').textContent = 'connected';
       $('role').textContent = `you are the ${role}`;
-      $('share').disabled = false; $('seed').disabled = false;
-      setStatus('● connected to a peer — seed 1000 blocks, or relay one', 'ok');
+      $('seed').disabled = false;
+      setStatus('● connected to a peer — seed 1000 blocks', 'ok');
       log(`mesh connected (you are the ${role}) — a direct browser↔browser channel, no server in the path`, 'ok');
     } });
     await peer.connect(signalUrl, { room });
@@ -167,17 +165,6 @@ $('connect').onclick = async () => {
 };
 
 $('seed').onclick = () => seedBlocks(1000);
-
-$('share').onclick = async () => {
-  try {
-    const hex = (await (await fetch('./data/block-26000.hex')).text()).trim();
-    const block = codec.decode('Block', hex);
-    const hash = codec.blockHash(block.header);
-    have.set(hash, hex);
-    log(`announcing block #26,000 ${hash.slice(0,16)}… to the peer (inv)`, 'ok');
-    peer.send('inv', { items: [{ type: MSG_BLOCK, hash }] });
-  } catch (e) { log('share failed: ' + e.message, 'err'); }
-};
 
 log(`idle — press ▶ Connect, then open this page in a second tab. Room ${room.slice(0,10)}… via ${signalUrl}.`, 'dim');
 </script>
