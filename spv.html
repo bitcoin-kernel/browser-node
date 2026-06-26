@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>bitcoin-kernel/browser-node — watch-only SPV wallet (testnet4)</title>
+<style>
+  :root { --bg:#fff; --fg:#16181d; --mut:#5b6470; --bd:#e6e8eb; --pan:#fafbfc; --ac:#e8830c; --ac2:#0969da; --good:#1a7f37; --bad:#cf222e; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; color-scheme:light; }
+  body { background:var(--bg); color:var(--fg); font:14px/1.55 var(--mono); max-width:780px; margin:24px auto; padding:0 16px 60px; }
+  h1 { font-size:18px; } a { color:var(--ac2); }
+  button { background:var(--pan); color:var(--fg); border:1px solid var(--bd); border-radius:6px; padding:9px 15px; cursor:pointer; font:inherit; }
+  button:hover { background:#f0f2f4; border-color:var(--ac); } button:disabled { opacity:.45; cursor:default; }
+  input { font:inherit; border:1px solid var(--bd); border-radius:6px; padding:8px 9px; width:100%; box-sizing:border-box; }
+  label { color:var(--mut); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+  table { border-collapse:collapse; width:100%; margin-top:14px; }
+  td, th { border:1px solid var(--bd); padding:7px 9px; text-align:left; }
+  th { background:var(--pan); color:var(--mut); font-weight:700; font-size:12px; }
+  td.addr { word-break:break-all; }
+  .pill { display:inline-block; font-size:11px; border:1px solid var(--bd); border-radius:999px; padding:1px 8px; color:var(--mut); }
+  .ok{color:var(--good)} .err{color:var(--bad)} .dim{color:var(--mut)}
+  .row { display:flex; gap:8px; align-items:center; margin:10px 0; }
+  code { background:var(--pan); border:1px solid var(--bd); border-radius:4px; padding:1px 5px; font-size:.92em; }
+</style>
+</head>
+<body>
+<h1>bitcoin-kernel / browser-node — watch-only SPV wallet <span class="dim">(testnet4)</span></h1>
+<p class="dim">A <b>watch-only</b> wallet: paste an extended public key (<code>tpub…</code> for testnet, <code>xpub…</code> for mainnet)
+and it derives your receiving <b>addresses</b> — <b>no private keys anywhere</b> (this codebase is verification-only). This is
+stage&nbsp;1 of an SPV wallet; next it will scan the chain for payments (BIP158 filters) and verify them (SPV merkle proofs).
+Need an xpub? That'll live on a separate keys page. <a href="how-it-works.html">how it works</a> · <a href="node.html">the node</a></p>
+
+<div class="row"><label style="min-width:120px">extended pubkey</label></div>
+<input id="xkey" spellcheck="false" value="tpubDCxX2sYFS5bDkSe5GKKYHjBW7tgyN1R3UchpLJvdbf54ohxeGRtd8MbDUe1cguVHe4vnK68DsuD5MXjxi9EXx16rb9EnNsaF5KT99CinaJz">
+<div class="row" style="margin-top:10px">
+  <button id="derive">▶ Derive addresses</button>
+  <span class="dim">count <input id="count" type="number" value="5" min="1" max="50" style="width:60px"></span>
+  <span id="net" class="pill">—</span>
+  <span id="status" class="dim"></span>
+</div>
+
+<div id="out"></div>
+
+<p class="dim" style="margin-top:18px; border-top:1px solid var(--bd); padding-top:10px">
+Watch-only, BIP32 (BIP84 <code>m/84'/net'/0'</code> account · receiving chain <code>0/i</code>, P2WPKH). Derivation verified
+against the published BIP84 test vector (<code>test-spv-derive.mjs</code>). The default value is an <b>example</b> testnet
+key — paste your own. No network calls yet; balances/SPV come next.</p>
+
+<script type="module">
+import { Bip32 } from './engine/codec/wallet.js';
+import { ScriptEngine } from './engine/codec/script.js';
+
+const $ = (id) => document.getElementById(id);
+let seTestnet = null, seMainnet = null;
+
+async function loadEngines() {
+  const jl = (n) => fetch(`./engine/schema/${n}.jsonld`).then(r => r.json());
+  const [script, chain] = await Promise.all([jl('script'), jl('chain')]);
+  seTestnet = ScriptEngine.fromSchemas(script, chain, 'btc:testnet4');
+  seMainnet = ScriptEngine.fromSchemas(script, chain, 'btc:mainnet');
+}
+
+function derive() {
+  const xkey = $('xkey').value.trim();
+  const node = Bip32.decode(xkey);
+  if (!node) { $('status').innerHTML = '<span class="err">not a valid xpub / tpub</span>'; $('out').innerHTML = ''; $('net').textContent = '—'; return; }
+  const testnet = xkey.startsWith('tpub');
+  const se = testnet ? seTestnet : seMainnet;
+  $('net').textContent = testnet ? 'testnet4 · tb1…' : 'mainnet · bc1…';
+  const n = Math.max(1, Math.min(50, parseInt($('count').value, 10) || 5));
+  let rows = '';
+  for (let i = 0; i < n; i++) {
+    const child = Bip32.derivePath(node, `0/${i}`);
+    const addr = se.classify(Bip32.scriptPubKey(child, 'p2wpkh')).address;
+    rows += `<tr><td>0/${i}</td><td class="addr">${addr}</td></tr>`;
+  }
+  $('out').innerHTML = `<table><tr><th style="width:70px">path</th><th>receiving address (P2WPKH)</th></tr>${rows}</table>`;
+  $('status').innerHTML = `<span class="ok">✓ derived ${n}</span>`;
+}
+
+$('derive').onclick = derive;
+$('xkey').addEventListener('keydown', (e) => { if (e.key === 'Enter') derive(); });
+
+await loadEngines();
+$('status').textContent = 'engine ready — press Derive';
+</script>
+</body>
+</html>
