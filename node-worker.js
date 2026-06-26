@@ -5,7 +5,7 @@
 // Main thread talks to it over a tiny postMessage RPC.
 import { loadEngine, coinviewOf } from './validate-forward.js';
 import { ShardedUtxo } from './sharded-utxo-browser.js';
-import { followChain } from './follow-chain.js';
+import { followChain, applyBlock } from './follow-chain.js';
 import { setVerifyBackend } from './engine/codec/secp256k1.js';
 import { sha256 } from './engine/codec/hash.js';
 import { Accumulator } from './swiftsync/accumulator.js';
@@ -66,6 +66,39 @@ async function swiftsync() {
   }
   for (const k of survivors) { const i = k.lastIndexOf(':'); acc.spend(encodeOutpoint({ txid: k.slice(0, i), vout: +k.slice(i + 1) })); }
   return { zero: acc.isZero(), seedN, created, spent, terminal: survivors.size, stateBytes: 32, ms: performance.now() - t0 };
+}
+
+// Stream REAL blocks from genesis and full-consensus-validate them forward
+// against a growing UTXO set — every script, signature, fee, maturity and
+// witness commitment, with WASM secp. State persists across batches so the
+// chain advances continuously; the main thread feeds blocks it downloads from a
+// peer over the bridge. This is a real node's inner loop, run in the tab — it
+// goes until the UTXO set approaches the ~25 GB RAM wall (which SwiftSync lifts).
+let stream = null;
+async function streamForwardInit() {
+  snap = new ShardedUtxo(64);                          // also the checkpoint target
+  stream = { coinview: coinviewOf(snap), prevHash: null, height: 0, validated: 0, t0: performance.now() };
+  return { ok: true };
+}
+async function streamForwardBatch({ blocks } = {}) {
+  if (!stream) throw new Error('call streamForwardInit first');
+  const s = stream; const out = [];
+  for (const hex of blocks) {
+    const height = s.height + 1;
+    const block = codec.decode('Block', hex);
+    const hash = codec.blockHash(block.header);
+    const linked = s.prevHash === null ? null : block.header.prevBlockHash === s.prevHash;
+    const t0 = performance.now();
+    const struct = be.validateBlockStructure(block).results;
+    const ctx = be.validateBlockContext(block, { height, utxo: s.coinview }).results;
+    const ms = performance.now() - t0;
+    const failed = [...struct, ...ctx].filter((r) => r.ok === false).map((r) => r.rule);
+    const ok = failed.length === 0 && linked !== false;
+    if (ok) { applyBlock(snap, block, height, codec); s.prevHash = hash; s.height = height; s.validated++; }
+    out.push({ height, txs: block.transactions.length, ok, failed, utxoSize: snap.size, ms });
+    if (!ok) break;
+  }
+  return { results: out, height: s.height, validated: s.validated, utxoSize: snap.size, totalMs: performance.now() - s.t0 };
 }
 
 // Checkpoint the coin view via an OPFS *synchronous access handle* (Worker-only).
@@ -166,7 +199,7 @@ async function verifySnapshot({ url, expected } = {}) {
   return { coins: n, coinsCount: hdr.coinsCount, baseHash: hdr.baseHash, netMagic: hdr.netMagic, digest, matches: expected ? digest === expected : null, mb: +(buf.length / 1048576).toFixed(0), ms: performance.now() - t0 };
 }
 
-const handlers = { init, followRange, checkpoint, resume, swiftsync, scaleAccumulate, swiftsyncHints, fullchain, verifySnapshot };
+const handlers = { init, followRange, streamForwardInit, streamForwardBatch, checkpoint, resume, swiftsync, scaleAccumulate, swiftsyncHints, fullchain, verifySnapshot };
 self.onmessage = async (e) => {
   const { id, cmd, args } = e.data;
   try { self.postMessage({ id, ok: true, result: await handlers[cmd](args) }); }
