@@ -34,16 +34,39 @@ const codec = new Codec(await jl('core'), await jl('proof'));
 const txidOf = (tx) => codec.txid(tx);
 const acc = new Accumulator({ sha256 });
 
+// Retry a batch until every item resolves (testnet4 reorgs frequently and shallowly;
+// a transient miss must never be dropped).
+const fetchAll = async (calls) => {
+  let out = new Array(calls.length).fill(null), pending = calls.map((c, i) => i);
+  for (let a = 0; a < 8 && pending.length; a++) {
+    if (a) await new Promise((r) => setTimeout(r, 250));
+    const rs = await rpcBatch(pending.map((i) => calls[i]));
+    const still = []; rs.forEach((r, k) => { const i = pending[k]; if (r && r.result != null) out[i] = r.result; else still.push(i); });
+    pending = still;
+  }
+  if (pending.length) throw new Error(`unresolved after retries (#${pending.length})`);
+  return out;
+};
+
 const BATCH = 200;
 const t0 = Date.now(); let done = 0, bytes = 0;
-for (let lo = 1; lo <= H; lo += BATCH) {
-  const hi = Math.min(lo + BATCH - 1, H);
-  const heights = []; for (let h = lo; h <= hi; h++) heights.push(h);
-  const hashes = (await rpcBatch(heights.map((h) => ({ method: 'getblockhash', params: [h] })))).map((r) => r.result);
-  const raws = (await rpcBatch(hashes.map((h) => ({ method: 'getblock', params: [h, 0] })))).map((r) => r.result);
+// Phase 1: capture a CONSISTENT view of the chain — all hashes 1..H up front, fast.
+// Then fetch blocks BY HASH, immune to reorgs during the run (orphaned blocks are
+// still served by hash). This is what makes the digest reproducible.
+process.stdout.write('capturing block hashes 1..' + H + ' …\n');
+const hashes = [];
+for (let lo = 1; lo <= H; lo += 1000) {
+  const hi = Math.min(lo + 999, H); const hs = [];
+  for (let h = lo; h <= hi; h++) hs.push({ method: 'getblockhash', params: [h] });
+  hashes.push(...await fetchAll(hs));
+}
+console.log(`captured ${hashes.length} hashes; tip #${H} = ${hashes[H - 1].slice(0, 16)}…`);
+for (let lo = 0; lo < hashes.length; lo += BATCH) {
+  const slice = hashes.slice(lo, lo + BATCH);
+  const raws = await fetchAll(slice.map((h) => ({ method: 'getblock', params: [h, 0] })));
   for (const hex of raws) { bytes += hex.length / 2; applyBlocks([codec.decode('Block', hex)], { txidOf, acc }); }
-  done = hi;
-  if (done % 2000 === 0 || done === H) {
+  done = Math.min(lo + BATCH, H);
+  if (done % 2000 < BATCH || done === H) {
     const s = (Date.now() - t0) / 1000;
     process.stdout.write(`\r  height ${done}/${H}  ${(done / s).toFixed(0)} blk/s  ${(bytes / 1048576).toFixed(0)} MB  ${s.toFixed(0)}s   `);
   }
