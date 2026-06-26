@@ -25,14 +25,14 @@
 <body>
 <h1>bitcoin-kernel / browser-node — mesh <span class="dim">(block propagation · PoC)</span></h1>
 <p class="dim"><b>Open this page in two tabs</b> (or send the link to a friend). The two tabs become Bitcoin peers to each other
-over <b>WebRTC — no server in the data path</b> — meeting in a room on a signaling server. Hit <b>Seed 1000</b> in one tab:
-it pulls <b>1000 real blocks</b> from the network (via the bridge) and <b>propagates them to the other tab</b> over the channel,
+over <b>WebRTC — no server in the data path</b> — meeting in a room on a signaling server. Hit <b>Seed 5000</b> in one tab:
+it pulls <b>5000 real blocks</b> from the network (via the bridge) and <b>propagates them to the other tab</b> over the channel,
 which <b>validates every one</b> (proof-of-work + merkle root). That's block propagation at volume, in a browser mesh.
 <a href="node.html">the node</a> · <a href="how-it-works.html">how it works</a></p>
 
 <p>
   <button id="connect">▶ Connect to the mesh</button>
-  <button id="seed" disabled>🌱 Seed 1000 blocks from the network → peer</button>
+  <button id="seed" disabled>🌱 Seed 5000 blocks from the network → peer</button>
   <span id="status" class="dim">idle</span>
 </p>
 
@@ -45,7 +45,7 @@ which <b>validates every one</b> (proof-of-work + merkle root). That's block pro
 <div id="log"></div>
 
 <p class="dim" style="margin-top:14px; border-top:1px solid var(--bd); padding-top:10px">
-PoC scope: <b>Seed 1000</b> pulls real blocks from the network (via the bridge) and relays them to the peer, each validated for
+PoC scope: <b>Seed 5000</b> pulls real blocks from the network (via the bridge) and relays them to the peer, each validated for
 structure + proof-of-work (no UTXO set, so not full-consensus). Next: relay across more than two peers, and stream the full chain.
 Default room <code>c0ffeebabe123456</code>; override with
 <code>?room=&lt;hex&gt;</code> and the signaling server with <code>?signal=wss://your.pod/.webrtc</code>.</p>
@@ -82,36 +82,56 @@ async function loadEngine() {
   genesisHash = codec.blockHash(codec.decode('BlockHeader', vectors.genesisHeader));
 }
 
+// Backpressure: don't overrun the data channel's send buffer during a big burst.
+function drain(dc, max = 4 * 1024 * 1024) {
+  if (!dc || dc.bufferedAmount < max) return Promise.resolve();
+  return new Promise((res) => { dc.bufferedAmountLowThreshold = max / 2; const h = () => { dc.removeEventListener('bufferedamountlow', h); res(); }; dc.addEventListener('bufferedamountlow', h); });
+}
+
 // SEED: pull N real blocks from the network (via the bridge), validate each, and
 // relay them to the mesh peer — block propagation at volume, browser→browser.
-async function seedBlocks(n = 1000) {
+async function seedBlocks(n = 5000) {
   $('seed').disabled = true;
   const bridgeSignal = q.get('signal') || 'wss://melvincarvalho.com/.webrtc';
   const bridgeRoom = q.get('bridgeRoom') || 'b17c0192abad1deacafe';   // the bridge's room (its network source)
   const net = new RtcPeer(p2p, codec);
+  const MAX_MSG = 200 * 1024;   // single data-channel message safety cap (bytes)
   try {
     setStatus('seed: connecting to the network via the bridge…', 'warn');
     log(`seed: connecting to the network (bridge room ${bridgeRoom.slice(0, 10)}…)`);
     await net.connect(bridgeSignal, { room: bridgeRoom });
     log('seed: connected to a testnet4 peer — fetching headers', 'ok');
-    net.send('getheaders', { version: 70016, blockLocator: [genesisHash], hashStop: '0'.repeat(64) });
-    const hmsg = await net.waitFor(['headers'], 30000);
-    const headers = (hmsg.payload?.entries ?? []).map((e) => e.header);
-    const hashes = headers.slice(0, n).map((h) => codec.blockHash(h));
-    if (hashes.length < n) log(`seed: peer returned ${hashes.length} headers — relaying those`, 'warn');
-    const BATCH = 50; let got = 0; const t0 = performance.now();
+    // getheaders returns ≤2000/msg → paginate, continuing the locator from the last hash.
+    const hashes = []; let locator = [genesisHash];
+    while (hashes.length < n) {
+      net.send('getheaders', { version: 70016, blockLocator: locator, hashStop: '0'.repeat(64) });
+      const hmsg = await net.waitFor(['headers'], 30000);
+      const hdrs = (hmsg.payload?.entries ?? []).map((e) => e.header);
+      if (!hdrs.length) break;
+      for (const h of hdrs) { hashes.push(codec.blockHash(h)); if (hashes.length >= n) break; }
+      locator = [hashes[hashes.length - 1]];
+      setStatus(`seed: fetched ${fmt(hashes.length)} headers…`, 'warn');
+    }
+    log(`seed: have ${fmt(hashes.length)} block hashes — fetching + relaying`, 'ok');
+    const BATCH = 50; let got = 0, skipped = 0; const t0 = performance.now();
     for (let i = 0; i < hashes.length; i += BATCH) {
       const batch = hashes.slice(i, i + BATCH);
       net.send('getdata', { items: batch.map((hash) => ({ type: MSG_WITNESS_BLOCK, hash })) });
+      const out = [];
       await net.collect('block', batch.length, { onItem: (msg) => {
         if (be.validateBlockStructure(msg.payload).results.some((r) => r.ok === false)) return;  // validate before relay
-        peer.send('block', toHex(codec.encode('Block', msg.payload)));                            // relay to the mesh peer
-        got++; $('seeded').textContent = fmt(got);
+        out.push(codec.encode('Block', msg.payload));
       }, timeoutMs: 30000 });
-      setStatus(`seed: relaying ${got}/${hashes.length} blocks to the peer…`, 'warn');
+      for (const bytes of out) {
+        if (bytes.length > MAX_MSG) { skipped++; continue; }   // too big for one DC message (chunking is a TODO)
+        await drain(peer.dc);
+        peer.send('block', toHex(bytes));
+        got++; $('seeded').textContent = fmt(got);
+      }
+      setStatus(`seed: relaying ${fmt(got)}/${fmt(hashes.length)}${skipped ? ` (${skipped} too large, skipped)` : ''}…`, 'warn');
     }
-    log(`seed: fetched ${got} blocks from the network and relayed them to the mesh peer in ${((performance.now() - t0) / 1000).toFixed(1)}s`, 'ok');
-    setStatus(`● seeded ${got} blocks to the peer`, 'ok');
+    log(`seed: fetched + relayed ${fmt(got)} blocks${skipped ? `, skipped ${skipped} over ${MAX_MSG / 1024}KB` : ''} in ${((performance.now() - t0) / 1000).toFixed(1)}s`, 'ok');
+    setStatus(`● seeded ${fmt(got)} blocks to the peer`, 'ok');
     net.close();
   } catch (e) {
     setStatus('seed error: ' + e.message, 'err');
@@ -164,7 +184,7 @@ $('connect').onclick = async () => {
   }
 };
 
-$('seed').onclick = () => seedBlocks(1000);
+$('seed').onclick = () => seedBlocks(5000);
 
 log(`idle — press ▶ Connect, then open this page in a second tab. Room ${room.slice(0,10)}… via ${signalUrl}.`, 'dim');
 </script>
