@@ -132,12 +132,18 @@ async function runHeaderFeed() {
     $('hsub').textContent = (webrtc ? 'WebRTC' : 'bridge') + ': synced + validated, live';
     log(`header tip: #${fmt(tip.height)} (validated from genesis)`, 'ok');
     // Keep pace with the tip: poll the peer; validate each new header as testnet4 mines it.
+    let lastBlockAt = Date.now();
     tail(session, { intervalMs: 8000, log, onTip: ({ height, hash, added, reorgs }) => {
+      lastBlockAt = Date.now();
       $('htip').textContent = '#' + fmt(height);
-      $('hsub').textContent = (webrtc ? 'WebRTC' : 'bridge') + `: following the tip · +${added}`;
       log(`new block: header tip → #${fmt(height)} (${hash.slice(0, 16)}…)`, 'ok');
       if (reorgs && reorgs.length) log(`reorg handled while following (${reorgs.length})`, 'warn');
     } });
+    // heartbeat: tick every second so it's visibly listening, even between blocks
+    setInterval(() => {
+      const s = Math.round((Date.now() - lastBlockAt) / 1000);
+      $('hsub').textContent = (webrtc ? 'WebRTC' : 'bridge') + `: following the tip · ${s}s since last block`;
+    }, 1000);
     log('following the tip — new headers validate as the network mines them', 'dim');
   } catch (e) {
     $('htip').textContent = 'offline';
