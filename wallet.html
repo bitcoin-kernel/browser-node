@@ -21,6 +21,8 @@
   .ok{color:var(--good)} .err{color:var(--bad)} .dim{color:var(--mut)}
   code { background:var(--pan); border:1px solid var(--bd); border-radius:4px; padding:1px 5px; font-size:.92em; }
   fieldset { border:1px solid var(--bd); border-radius:8px; padding:4px 14px 14px; margin:0; }
+  .coins-table { border-collapse:collapse; width:100%; } .coins-table td, .coins-table th { border:1px solid var(--bd); padding:6px 9px; text-align:left; } .coins-table th { color:var(--mut); font-size:12px; }
+  .coins-table button { padding:4px 9px; }
 </style>
 </head>
 <body>
@@ -38,6 +40,7 @@ This page <b>signs and broadcasts</b> — the signed transaction is announced to
 <input id="mnemonic" spellcheck="false" placeholder="twelve word BIP39 mnemonic …">
 <p style="margin-top:8px"><button id="load">▶ Load wallet</button> <span id="loadStatus" class="dim"></span></p>
 <div id="wallet"></div>
+<div id="coins"></div>
 
 <h2>2 · Spend</h2>
 <fieldset id="spendBox" disabled>
@@ -65,7 +68,9 @@ tx out to several testnet4 peers over the bridge (<code>inv</code> → <code>get
 a random peer per connection) and stops once one admits it — so a single peer missing an unconfirmed parent can't sink it.
 Proven end-to-end in <code>test-sign.mjs</code> / <code>test-wallet.mjs</code> / <code>test-broadcast.mjs</code> /
 <code>test-broadcast-multi.mjs</code>. The UTXO fields here are pre-filled when you arrive from a <b>spend →</b> link on the
-<a href="mempool.html">mempool watch</a> or <a href="spv.html">SPV scan</a>. Next: multi-UTXO coin selection.</p>
+<a href="mempool.html">mempool watch</a> or <a href="spv.html">SPV scan</a>. Your coins are tracked locally across reloads
+(<code>wallet-store.js</code>): a spend drops the input and tracks the change, so the balance follows without re-scanning.
+Next: multi-UTXO coin selection.</p>
 
 <script type="module">
 import { mnemonicToSeed, deriveSigningKey, signEcdsa, toDer } from './wasm-keygen.js';
@@ -75,6 +80,7 @@ import { ScriptInterpreter } from './engine/codec/interpreter.js';
 import { hash160, bytesToHex } from './engine/codec/hash.js';
 import { connect as liveConnect } from './live-feed.js';
 import { broadcastToPeers } from './broadcast.js';
+import { loadSet, saveSet, applyTx, addUtxo, removeUtxo, listUtxos, balance } from './wallet-store.js';
 
 const $ = (id) => document.getElementById(id);
 const q = new URLSearchParams(location.search);
@@ -82,6 +88,7 @@ const signalUrl = q.get('signal') || 'wss://melvincarvalho.com/.webrtc';
 const bridgeRoom = q.get('bridgeRoom') || 'b17c0192abad1deacafe';
 let codec = null, se = null, interp = null, seed = null;
 let schemas = null, vectors = null, signedTx = null;
+let ownScripts = null, walletId = null, utxoSet = {};   // persistent per-wallet coin set
 const GAP = 20;   // how many indices to search per chain when locating the funding address
 
 // derive (key, scriptPubKey, address) for one BIP84 index — the same derivation keys.html shows
@@ -117,8 +124,33 @@ async function loadWallet() {
     `<div class="field"><div class="k">your receiving addresses — fund one on testnet4, then spend it below</div>` +
     `<table style="border-collapse:collapse;width:100%"><tr><th style="width:70px;border:1px solid var(--bd);padding:6px 9px">path</th><th style="border:1px solid var(--bd);padding:6px 9px">address (P2WPKH)</th></tr>${rows}</table></div>`;
   if (!$('fundAddr').value) $('fundAddr').value = at(0, 0).address;   // default to 0/0 (unless prefilled from a link)
+  // the wallet's own scripts (first 20 receiving + change) — for recognising change
+  ownScripts = new Map(); for (const c of [0, 1]) for (let i = 0; i < GAP; i++) { const e = at(c, i); ownScripts.set(e.scriptPubKey, e.address); }
+  walletId = at(0, 0).address;                 // stable per-wallet key for storage
+  utxoSet = loadSet(walletId); renderCoins();
   $('spendBox').disabled = false;
   $('loadStatus').innerHTML = '<span class="ok">✓ wallet loaded (key in this tab only)</span>';
+}
+
+// The wallet's known coins, persisted per wallet in localStorage. Updated as you
+// spend (spent input dropped, change tracked) — see wallet-store.js.
+function renderCoins() {
+  if (!walletId) return;
+  const us = listUtxos(utxoSet);
+  if (!us.length) { $('coins').innerHTML = '<p class="dim" style="margin-top:8px">No tracked coins yet — build a spend (or arrive from a <b>spend →</b> link) and your change is tracked here across reloads.</p>'; return; }
+  const rows = us.map((u) => `<tr><td>${u.value.toLocaleString()}</td><td class="addr">${u.txid}:${u.vout}</td><td><button data-use="${u.txid}:${u.vout}">use</button> <button data-forget="${u.txid}:${u.vout}" title="forget (e.g. spent elsewhere)">✕</button></td></tr>`).join('');
+  $('coins').innerHTML =
+    `<div class="field"><div class="k">your coins — balance ${balance(utxoSet).toLocaleString()} sats (${(balance(utxoSet) / 1e8).toLocaleString()} tBTC)</div>` +
+    `<table class="coins-table"><tr><th style="width:120px">value (sats)</th><th>outpoint</th><th style="width:120px"></th></tr>${rows}</table></div>`;
+  $('coins').querySelectorAll('[data-use]').forEach((b) => { b.onclick = () => useUtxo(b.getAttribute('data-use')); });
+  $('coins').querySelectorAll('[data-forget]').forEach((b) => { b.onclick = () => { const [t, v] = b.getAttribute('data-forget').split(':'); utxoSet = removeUtxo(utxoSet, t, Number(v)); saveSet(walletId, utxoSet); renderCoins(); }; });
+}
+
+// load one of your coins into the spend form
+function useUtxo(key) {
+  const u = utxoSet[key]; if (!u) return;
+  $('fundAddr').value = u.address; $('utxoTxid').value = u.txid; $('utxoVout').value = u.vout; $('utxoValue').value = u.value;
+  $('buildStatus').innerHTML = `<span class="dim">loaded ${u.value.toLocaleString()} sats — set amount + destination, then Build</span>`;
 }
 
 function buildAndSign() {
@@ -163,6 +195,9 @@ function buildAndSign() {
     const finalTxid = codec.txid(tx);
 
     signedTx = tx;
+    // track the input we're spending so the balance reflects it before the spend lands
+    utxoSet = addUtxo(utxoSet, { txid, vout, value: utxoValue, scriptPubKey: utxo.scriptPubKey, address: fundAddr });
+    saveSet(walletId, utxoSet); renderCoins();
     const chain = utxo.change ? '1' : '0';
     const changeLine = change > 0 ? `<tr><td class="dim">change → your ${chain}/${utxo.index}</td><td>${change} sats</td></tr>` : `<tr><td class="dim">change</td><td>none</td></tr>`;
     $('out').innerHTML =
@@ -197,8 +232,12 @@ async function broadcast() {
       return session.peer;
     }, signedTx, codec, { peers: BROADCAST_PEERS, needAccepts: 1 });
 
-    if (out.accepted > 0)
-      $('bcastOut').innerHTML = `<div class="field"><div class="k ok">✓ accepted into the mempool (${out.accepted} of ${out.tried} peer(s))</div><div class="v">txid ${out.txid}<br>A peer admitted the transaction — it is now relaying across testnet4.</div></div>`;
+    if (out.accepted > 0) {
+      // the spend landed — drop the spent input, track the change, persist
+      utxoSet = applyTx(utxoSet, signedTx, ownScripts, codec);
+      saveSet(walletId, utxoSet); renderCoins();
+      $('bcastOut').innerHTML = `<div class="field"><div class="k ok">✓ accepted into the mempool (${out.accepted} of ${out.tried} peer(s))</div><div class="v">txid ${out.txid}<br>A peer admitted the transaction — it is now relaying across testnet4. Your coins above are updated (input spent, change tracked).</div></div>`;
+    }
     else
       $('bcastOut').innerHTML = `<div class="field"><div class="k err">✗ no peer admitted it (tried ${out.tried})</div><div class="v">${out.results.map((r, i) => `peer ${i + 1}: ${r.detail}`).join('<br>')}<br><br>Usually the input is still <b>unconfirmed</b> and these peers don't have its parent tx, or it's already spent. Wait for the funding tx to confirm, then broadcast again (the signed tx is unchanged).</div></div>`;
     $('bcastStatus').innerHTML = out.accepted > 0 ? '<span class="ok">✓ broadcast</span>' : '<span class="dim">done</span>';

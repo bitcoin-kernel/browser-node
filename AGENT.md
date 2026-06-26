@@ -76,7 +76,7 @@ engine (used inside the worker). Pure-JS fallback exists.
 | `spv.html` | 🟡 | **Watch-only SPV wallet.** ① derive receiving addresses from an xpub/tpub (`Bip32`); ② **SPV merkle-proof** inclusion (`SpvEngine`, BIP37 proof built from a block); ③ **scan** the chain (full-block, over the bridge) for payments → UTXOs + balance, each with a **spend →** link into wallet.html. No private keys. |
 | `mempool.html` | 🟡 | **Watch the unconfirmed mempool for an address** — no explorer API. Connects to a peer over the bridge, listens to the tx relay flow (`inv`→`getdata`→`tx`), decodes each tx itself, and flags outputs paying the watched address → live unconfirmed UTXOs + inbound total, each with a **spend →** link that
 opens wallet.html pre-filled. `?address=` prefills + auto-watches. Honest bound: watches the *flow*, can't enumerate the *pool* (no bloom/BIP157 on reachable peers), so it catches payments as they propagate while open. |
-| `wallet.html` | 🟡 | **Sign + broadcast a testnet4 spend.** Load a BIP39 mnemonic → `deriveSigningKey` for whichever address holds the UTXO (searches the first 20 receiving + change indices for the funding address, signs with that key) → build a P2WPKH spend (UTXO + destination + amount + fee, change back to `0/0`) → BIP143 sighash → WASM secp ECDSA sign → **verified against the node's own `ScriptInterpreter.verifyInput` before display** → raw hex + txid → **Broadcast** fans it out to several testnet4 peers over the bridge (`inv`→`getdata`→`tx`, then re-`getdata` reads mempool accept/reject; the bridge dials a random peer per connection), succeeding once one admits it. Keys live only in-tab. The UTXO fields auto-fill from a **spend →** link on mempool.html / spv.html (`?fundAddr=&txid=&vout=&value=`), or hand-enter. |
+| `wallet.html` | 🟡 | **Sign + broadcast a testnet4 spend.** Load a BIP39 mnemonic → `deriveSigningKey` for whichever address holds the UTXO (searches the first 20 receiving + change indices for the funding address, signs with that key) → build a P2WPKH spend (UTXO + destination + amount + fee, change back to `0/0`) → BIP143 sighash → WASM secp ECDSA sign → **verified against the node's own `ScriptInterpreter.verifyInput` before display** → raw hex + txid → **Broadcast** fans it out to several testnet4 peers over the bridge (`inv`→`getdata`→`tx`, then re-`getdata` reads mempool accept/reject; the bridge dials a random peer per connection), succeeding once one admits it. Keys live only in-tab. The UTXO fields auto-fill from a **spend →** link on mempool.html / spv.html (`?fundAddr=&txid=&vout=&value=`), or hand-enter. **Tracks its own coins** across reloads (`wallet-store.js`, localStorage): a spend drops the input + records the change, so it shows a running balance + coin list with use/forget — no re-scan. |
 
 **URL params (shared):** `?signal=wss://<pod>/.webrtc` (WebRTC signaling) · `?room=<hex>`
 (`[a-f0-9]{8,128}`) · `?bridge=ws://host:8334` (WS bridge) · `?replay=1` (node/fullnode: re-watch
@@ -96,6 +96,9 @@ the genesis→tip header climb) · mesh `?bridgeRoom=<hex>` (the seed's network 
   but the sender (gossip); `sendToOne()` for gossip mode; `onPeers(count)` reports the live count.
 - **`live-feed.js`** — `connect({bridgeUrl | signalUrl, room, schemas, vectors, persist})` picks
   WsPeer vs RtcPeer; `syncToTip` (one-shot), `tail` (follow + reorgs).
+- **`wallet-store.js`** — wallet.html only: a per-wallet UTXO set in localStorage (keyed by 0/0 address).
+  Pure `applyTx(set, tx, ownScripts, codec)` (drop spent inputs, track outputs paying our own scripts) +
+  `addUtxo`/`removeUtxo`/`balance`/`listUtxos`; node-proven in `test-walletstore.mjs`. No private keys.
 - **`broadcast.js`** — `broadcastTx(peer, tx, codec)`: announce a signed tx (`inv`), serve it on
   `getdata`, then re-query to read mempool accept (`tx`/already-known) vs reject (`notfound`).
   `broadcastToPeers(connectOne, tx, codec, {peers, needAccepts})` fans out across several fresh
@@ -169,7 +172,8 @@ proof vs a real block), `test-keygen.mjs` (private BIP32 vs BIP32 vector 1), `te
 BIP143 verify → serialize round-trip), `test-wallet.mjs` (wallet.html's exact path: mnemonic →
 signing key → spend a real `tb1q…` address → engine-verified; signing addr == watch-only `0/0`),
 `test-walletindex.mjs` (index-aware signing: locate the funding address among 0/i+1/i, sign with that
-key → verify; the wrong key is rejected).
+key → verify; the wrong key is rejected), `test-walletstore.mjs` (UTXO state: a chain of spends removes
+inputs + tracks change, balance follows 256415→246215→234904, foreign outputs ignored).
 
 **Pattern:** prove network-dependent logic **node-side first** (compose `signaling-stub` +
 `bridge-webrtc` + `connectAsOfferer/Answerer`) before shipping the browser equivalent — the browser
