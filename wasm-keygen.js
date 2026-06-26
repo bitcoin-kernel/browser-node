@@ -35,3 +35,13 @@ export function deriveAccountNode(seed, { coin = 1, version = 0x043587cf } = {})
   for (const i of [H(84), H(coin), H(0)]) n = ckdPriv(n, i);
   return { version, depth: n.depth, parentFingerprint: n.parentFingerprint, childNumber: n.childNumber, chainCode: bytesToHex(n.chainCode), publicKey: bytesToHex(n.pub) };
 }
+
+// BIP39: a mnemonic → 64-byte seed (PBKDF2-HMAC-SHA512, 2048 iters). No wordlist
+// needed — this hashes the string, so a standard mnemonic from any wallet imports
+// here. Verified against the BIP84 vector in test-bip39.mjs.
+export async function mnemonicToSeed(mnemonic, passphrase = '') {
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey('raw', enc.encode(mnemonic.normalize('NFKD')), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt: enc.encode('mnemonic' + passphrase.normalize('NFKD')), iterations: 2048, hash: 'SHA-512' }, key, 512);
+  return new Uint8Array(bits);
+}
