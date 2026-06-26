@@ -4,9 +4,14 @@
   "description": "A Bitcoin testnet4 node's validation core running in a browser tab: bootstrap a UTXO set from a torrented or Bitcoin Core assumeUTXO snapshot, validate blocks forward, follow the chain, and live-sync the header chain over a WebSocket-to-TCP bridge.",
   "homepage": "http://bitcoin-kernel.com/browser-node/",
   "repository": "https://github.com/bitcoin-kernel/browser-node",
-  "pages": { "showcase": "index.html — the thirteen acts, explained", "verify": "verify.html — CLICK-AND-RUN: stream a Core dumptxoutset snapshot through the 32-byte accumulator (via WebTorrent or HTTP) and confirm it matches the chain-derived commitment. No bridge / bitcoind. The Ruben-facing demo.", "node": "node.html — the running-node dashboard (capstone): live headers + bootstrap + forward validation in a worker", "fullchain": "fullchain.html — full-chain SwiftSync run: stream blocks from genesis through the accumulator (32-byte state); needs tools/block-server.mjs" },
+  "pages": {
+    "showcase": "index.html — the thirteen acts, explained",
+    "verify": "verify.html — CLICK-AND-RUN: stream a Core dumptxoutset snapshot through the 32-byte accumulator (via WebTorrent or HTTP) and confirm it matches the chain-derived commitment. No bridge / bitcoind. The Ruben-facing demo.",
+    "node": "node.html — the running-node dashboard (capstone): live headers + bootstrap + forward validation in a worker",
+    "fullchain": "fullchain.html — full-chain SwiftSync run: stream blocks from genesis through the accumulator (32-byte state); needs tools/block-server.mjs"
+  },
   "verify_snapshot": "verify.html verified the FULL 826 MB / 14,129,063-coin testnet4 snapshot in-browser -> commitment af37b01d, matched, 62s, set-state never exceeding 32 bytes — via both HTTP and WebTorrent (worker reads the torrent blob). The 1 MB prefix quick-check runs on GitHub Pages immediately; the full snapshot needs to be seeded (node seed-snapshot.mjs) or hosted and the magnet/URL committed — the one deployment step for public click-and-run (the 826 MB can't live in git or on Pages).",
-  "fullchain_run": "fullchain.html validated genesis->30000 in the browser (166 MB, 23s, 32-byte state), residual defbb676… matching the SAME-rule independent reference from tools/fullchain-node.mjs (browser == Node) — the mechanism works end to end in the tab. Open finding: streaming the full genesis->141574 (11.3 GB, 21 min) gives a self-consistent commitment (971251bd) that does NOT equal Core's own dumptxoutset snapshot commitment (af37b01d) — and it is not a reorg (block 141574 is unchanged). Block 141574's hash is unchanged (156 conf), so the chain to it is provably identical in both — NOT a deep reorg. Most likely a single dropped block during the 21-min stream: testnet4 reorgs frequently (shallow), which briefly makes a block un-fetchable over RPC, and the block-server retries-on-miss now but originally dropped nulls silently (misaligning heights). Secondary suspect: our accumulator drops only OP_RETURN outputs while Core's chainstate (IsUnspendable) also drops oversized provably-unspendable scripts. The chain-consistency mechanism is verified by the matching same-rule reference run; exact parity with a real Core snapshot commitment needs a clean (retrying) full re-run + IsUnspendable parity.",
+  "fullchain_run": "RESOLVED + CONFIRMED. After matching Bitcoin Core's IsUnspendable (drop OP_RETURN AND scriptPubKeys >10KB), the full genesis->141574 accumulator (tools/fullchain-node.mjs, 11.3 GB, ~21 min) lands EXACTLY on af37b01d -- Core's own dumptxoutset snapshot commitment. So the whole-chain IBD and the assumeUTXO snapshot produce the identical 32-byte commitment: independent, airtight verification. The prior 971251bd was the deterministic IsUnspendable difference (reproduced byte-identical twice), not a reorg. In-browser: fullchain.html validated genesis->30000 (166 MB, 23s); verify.html confirmed the full 826 MB snapshot == af37b01d in 62s, 32-byte state.",
   "reached_live_tip": "tools/reach-tip.mjs bootstrapped from a real Core dumptxoutset snapshot at height 141,574 and validated 106 blocks forward to the live testnet4 tip #141,680 (including a 1,513-input block and 6 blocks mined during the run), 3,511 inputs verified, 7.6s in Node. It keeps only the coins the forward blocks spend; holding the full set is the remaining scale work below.",
   "network": "testnet4",
   "license": "AGPL-3.0-or-later",
@@ -17,105 +22,307 @@
   },
   "acts": [
     {
-      "id": 1, "name": "Bootstrap UTXO from a torrented snapshot", "ui": ["①", "②"],
+      "id": 1,
+      "name": "Bootstrap UTXO from a torrented snapshot",
+      "ui": [
+        "①",
+        "②"
+      ],
       "proves": "A UTXO snapshot fetched over WebTorrent (or HTTP) streams into a sharded coin view in the tab.",
-      "runs_on": "local-server", "requires": ["serve.mjs", "seed.mjs (webtorrent)", "tools/gen-snapshot.mjs"],
-      "modules": ["sharded-utxo-browser.js", "webtorrent.min.js"],
-      "verified": { "browser": "250,000 coins parsed in 0.11s", "scale_node": "14,100,000 coins = 3.23 GB resident, 9.7s load, 246 B/coin, 26M lookups/s" }
+      "runs_on": "local-server",
+      "requires": [
+        "serve.mjs",
+        "seed.mjs (webtorrent)",
+        "tools/gen-snapshot.mjs"
+      ],
+      "modules": [
+        "sharded-utxo-browser.js",
+        "webtorrent.min.js"
+      ],
+      "verified": {
+        "browser": "250,000 coins parsed in 0.11s",
+        "scale_node": "14,100,000 coins = 3.23 GB resident, 9.7s load, 246 B/coin, 26M lookups/s"
+      }
     },
     {
-      "id": 3, "name": "Validate a block forward", "ui": ["③"],
+      "id": 3,
+      "name": "Validate a block forward",
+      "ui": [
+        "③"
+      ],
       "proves": "One real block fully validated against a coin view: prevout resolution, scripts/signatures (BIP143), fees, maturity, witness commitment.",
-      "runs_on": "github-pages", "requires": [],
-      "modules": ["validate-forward.js", "engine/codec/blocks.js"],
-      "data": ["data/block-26000.hex", "data/snapshot-26000.ndjson"],
-      "verified": { "browser": "block #26000, 16/16 rules, 28 signatures, 45ms", "adversarial": "1-sat tamper to a coin value -> scripts rule FAILS (rejected)" }
+      "runs_on": "github-pages",
+      "requires": [],
+      "modules": [
+        "validate-forward.js",
+        "engine/codec/blocks.js"
+      ],
+      "data": [
+        "data/block-26000.hex",
+        "data/snapshot-26000.ndjson"
+      ],
+      "verified": {
+        "browser": "block #26000, 16/16 rules, 28 signatures, 45ms",
+        "adversarial": "1-sat tamper to a coin value -> scripts rule FAILS (rejected)"
+      }
     },
     {
-      "id": 4, "name": "Follow the chain", "ui": ["④"],
+      "id": 4,
+      "name": "Follow the chain",
+      "ui": [
+        "④"
+      ],
       "proves": "A run of consecutive blocks validated, applying each to the UTXO set (spend/create) so later blocks spend earlier blocks' outputs; linkage checked block-to-block.",
-      "runs_on": "github-pages", "requires": [],
-      "modules": ["follow-chain.js"],
-      "data": ["data/range.json", "data/range-seed.ndjson"],
-      "verified": { "browser": "blocks 26000..26020 (21), UTXO set 249 -> 1,361 coins, 1.1s; 842 of 1,091 inputs spend within-run coins" }
+      "runs_on": "github-pages",
+      "requires": [],
+      "modules": [
+        "follow-chain.js"
+      ],
+      "data": [
+        "data/range.json",
+        "data/range-seed.ndjson"
+      ],
+      "verified": {
+        "browser": "blocks 26000..26020 (21), UTXO set 249 -> 1,361 coins, 1.1s; 842 of 1,091 inputs spend within-run coins"
+      }
     },
     {
-      "id": 5, "name": "Live feed over a WS-to-TCP bridge", "ui": ["⑤"],
+      "id": 5,
+      "name": "Live feed over a WS-to-TCP bridge",
+      "ui": [
+        "⑤"
+      ],
       "proves": "The tab speaks the Bitcoin p2p protocol over a WebSocket bridge to a real testnet4 peer, syncs the whole header chain from genesis, fully validates every header (PoW, BIP94 difficulty, linkage, most-work reorg), and tails the live tip. The chain is persisted to OPFS and resumes across reloads.",
-      "runs_on": "local-server", "requires": ["bridge.mjs (ws)", "a testnet4 peer (e.g. bitcoind on :48333)"],
-      "modules": ["live-feed.js", "peer-ws.js", "opfs-header-store.js", "engine/chain/header-sync.js", "engine/store/header-store.js", "engine/codec/p2p.js", "engine/codec/headers.js"],
-      "data": ["data/testnet4.json"],
-      "verified": { "browser": "141,671 headers genesis->tip validated in 5.8s", "node": "5.1s, 0 reorgs", "opfs_resume": "reload resumes 141,671 headers from OPFS in 1.7s (no re-download / re-validation)" }
+      "runs_on": "local-server",
+      "requires": [
+        "bridge.mjs (ws)",
+        "a testnet4 peer (e.g. bitcoind on :48333)"
+      ],
+      "modules": [
+        "live-feed.js",
+        "peer-ws.js",
+        "opfs-header-store.js",
+        "engine/chain/header-sync.js",
+        "engine/store/header-store.js",
+        "engine/codec/p2p.js",
+        "engine/codec/headers.js"
+      ],
+      "data": [
+        "data/testnet4.json"
+      ],
+      "verified": {
+        "browser": "141,671 headers genesis->tip validated in 5.8s",
+        "node": "5.1s, 0 reorgs",
+        "opfs_resume": "reload resumes 141,671 headers from OPFS in 1.7s (no re-download / re-validation)"
+      }
     },
     {
-      "id": 6, "name": "Parse Core's dumptxoutset snapshot", "ui": ["⑥"],
+      "id": 6,
+      "name": "Parse Core's dumptxoutset snapshot",
+      "ui": [
+        "⑥"
+      ],
       "proves": "Bitcoin Core's real assumeUTXO snapshot (dumptxoutset v2 compressed format) is parsed in the tab and used as a validating coin view for the first post-snapshot block.",
-      "runs_on": "github-pages", "requires": [],
-      "modules": ["dumptxoutset.js", "validate-forward.js"],
-      "data": ["data/utxo-prefix.dat", "data/snapshot-120001.ndjson", "data/block-120001.hex"],
+      "runs_on": "github-pages",
+      "requires": [],
+      "modules": [
+        "dumptxoutset.js",
+        "validate-forward.js"
+      ],
+      "data": [
+        "data/utxo-prefix.dat",
+        "data/snapshot-120001.ndjson",
+        "data/block-120001.hex"
+      ],
       "verified": {
         "parser_node": "full 811 MB file: all 13,870,119 coins parsed to clean EOF; 40/40 sampled coins match bitcoind gettxout (value + scriptPubKey); 7 P2PK-uncompressed of 13.87M",
         "browser": "prefix parsed in-tab + block #120001 validated forward against it (52 txs, 85ms)"
       }
     },
     {
-      "id": 7, "name": "Persist the UTXO set (OPFS checkpoint)", "ui": ["⑦", "⑧"],
+      "id": 7,
+      "name": "Persist the UTXO set (OPFS checkpoint)",
+      "ui": [
+        "⑦",
+        "⑧"
+      ],
       "proves": "The RAM-resident coin view (ShardedUtxo) is checkpointed to OPFS (the model Bitcoin Core uses for the chainstate) and resumes from disk on reload — no re-parse.",
-      "runs_on": "github-pages", "requires": [],
-      "modules": ["opfs-coins-store.js", "sharded-utxo-browser.js", "dumptxoutset.js"],
-      "data": ["data/utxo-prefix.dat"],
-      "verified": { "browser": "16,913 coins -> 2.5 MB OPFS checkpoint (17ms); reload resumes all 16,913 coins in 11ms with lookups hitting" }
+      "runs_on": "github-pages",
+      "requires": [],
+      "modules": [
+        "opfs-coins-store.js",
+        "sharded-utxo-browser.js",
+        "dumptxoutset.js"
+      ],
+      "data": [
+        "data/utxo-prefix.dat"
+      ],
+      "verified": {
+        "browser": "16,913 coins -> 2.5 MB OPFS checkpoint (17ms); reload resumes all 16,913 coins in 11ms with lookups hitting"
+      }
     },
     {
-      "id": 9, "name": "WASM signature verification", "ui": ["⑨"],
+      "id": 9,
+      "name": "WASM signature verification",
+      "ui": [
+        "⑨"
+      ],
       "proves": "A WASM libsecp256k1 backend (tiny-secp256k1's wasm) is swapped into the engine via setVerifyBackend(), faster than the default pure-JS secp and gated by a verdict-equivalence check.",
-      "runs_on": "github-pages", "requires": [],
-      "modules": ["wasm-secp.js", "secp256k1.wasm", "engine/codec/secp256k1.js"],
-      "data": ["data/block-26000.hex", "data/snapshot-26000.ndjson"],
-      "verified": { "browser": "block #26000: pure-JS ~1,161 verifies/s vs WASM ~4,895 verifies/s (4.2x at block level), verdicts identical", "node": "wasm-secp-test.mjs: WASM verdicts == pure-JS verdicts on all 9 context rules" }
+      "runs_on": "github-pages",
+      "requires": [],
+      "modules": [
+        "wasm-secp.js",
+        "secp256k1.wasm",
+        "engine/codec/secp256k1.js"
+      ],
+      "data": [
+        "data/block-26000.hex",
+        "data/snapshot-26000.ndjson"
+      ],
+      "verified": {
+        "browser": "block #26000: pure-JS ~1,161 verifies/s vs WASM ~4,895 verifies/s (4.2x at block level), verdicts identical",
+        "node": "wasm-secp-test.mjs: WASM verdicts == pure-JS verdicts on all 9 context rules"
+      }
     },
     {
-      "id": 10, "name": "Run the node in a Web Worker (scale)", "ui": ["⑩"],
+      "id": 10,
+      "name": "Run the node in a Web Worker (scale)",
+      "ui": [
+        "⑩"
+      ],
       "proves": "The engine, WASM secp backend, UTXO set, and OPFS persistence (sync access handles, Worker-only) run inside a Web Worker, so flood-block validation and multi-GB checkpoints don't freeze the UI.",
-      "runs_on": "github-pages", "requires": [],
-      "modules": ["node-worker.js", "validate-forward.js", "follow-chain.js", "wasm-secp.js", "sharded-utxo-browser.js"],
-      "data": ["data/range.json", "data/range-seed.ndjson"],
-      "verified": { "browser": "follow+validate 21 blocks in a Worker: UI responsive (max frame gap 16ms) vs frozen on the main thread (~1063ms); UTXO checkpointed via an OPFS sync access handle" }
+      "runs_on": "github-pages",
+      "requires": [],
+      "modules": [
+        "node-worker.js",
+        "validate-forward.js",
+        "follow-chain.js",
+        "wasm-secp.js",
+        "sharded-utxo-browser.js"
+      ],
+      "data": [
+        "data/range.json",
+        "data/range-seed.ndjson"
+      ],
+      "verified": {
+        "browser": "follow+validate 21 blocks in a Worker: UI responsive (max frame gap 16ms) vs frozen on the main thread (~1063ms); UTXO checkpointed via an OPFS sync access handle"
+      }
     },
     {
-      "id": 11, "name": "SwiftSync — stateless validation", "ui": ["⑪"],
+      "id": 11,
+      "name": "SwiftSync — stateless validation",
+      "ui": [
+        "⑪"
+      ],
       "proves": "Set-consistency (no double-spends / fabricated coins) is verified with a constant-size SwiftSync accumulator (add created outputs, subtract spent inputs) instead of a multi-GB UTXO set. A valid range cancels to zero against its start/terminal snapshots; a fabricated spend breaks it.",
-      "runs_on": "github-pages", "requires": [],
-      "modules": ["swiftsync/accumulator.js", "swiftsync/outpoint.js", "engine/codec/hash.js"],
-      "data": ["data/range.json", "data/range-seed.ndjson"],
-      "verified": { "browser": "blocks 26000..26020: 249 + 2,203 - 1,091 - 1,361 cancels to ZERO with 32 bytes of state (vs ~25 GB); a fabricated spend yields a non-zero digest (rejected); 72ms", "node": "swiftsync-test.mjs", "provenance": "the repo's own SwiftSync accumulator (kernel/packages/swiftsync), verified across all of testnet4 by its _sscapstone.mjs" }
+      "runs_on": "github-pages",
+      "requires": [],
+      "modules": [
+        "swiftsync/accumulator.js",
+        "swiftsync/outpoint.js",
+        "engine/codec/hash.js"
+      ],
+      "data": [
+        "data/range.json",
+        "data/range-seed.ndjson"
+      ],
+      "verified": {
+        "browser": "blocks 26000..26020: 249 + 2,203 - 1,091 - 1,361 cancels to ZERO with 32 bytes of state (vs ~25 GB); a fabricated spend yields a non-zero digest (rejected); 72ms",
+        "node": "swiftsync-test.mjs",
+        "provenance": "the repo's own SwiftSync accumulator (kernel/packages/swiftsync), verified across all of testnet4 by its _sscapstone.mjs"
+      }
     },
     {
-      "id": 12, "name": "SwiftSync at scale — full UTXO set in 32 bytes", "ui": ["⑫"],
+      "id": 12,
+      "name": "SwiftSync at scale — full UTXO set in 32 bytes",
+      "ui": [
+        "⑫"
+      ],
       "proves": "The 25 GB ceiling is gone: the full real UTXO set is committed via the SwiftSync accumulator with the set-state held at a constant 32 bytes, not a multi-GB Map.",
-      "runs_on": "github-pages", "requires": [],
-      "modules": ["node-worker.js", "swiftsync/accumulator.js", "swiftsync/outpoint.js", "tools/swiftsync-commit.mjs"],
-      "verified": { "node": "tools/swiftsync-commit.mjs: 14,129,063 real coins (826 MB snapshot) -> 32-byte commitment af37b01d…, RSS flat at 0.90 GB (the input file, not 25 GB), 73s", "browser": "3,000,000 outpoints streamed through the accumulator in the worker -> 32-byte state (vs ~5.3 GB to hold), 302k/s, UI responsive (16ms gap)" }
+      "runs_on": "github-pages",
+      "requires": [],
+      "modules": [
+        "node-worker.js",
+        "swiftsync/accumulator.js",
+        "swiftsync/outpoint.js",
+        "tools/swiftsync-commit.mjs"
+      ],
+      "verified": {
+        "node": "tools/swiftsync-commit.mjs: 14,129,063 real coins (826 MB snapshot) -> 32-byte commitment af37b01d…, RSS flat at 0.90 GB (the input file, not 25 GB), 73s",
+        "browser": "3,000,000 outpoints streamed through the accumulator in the worker -> 32-byte state (vs ~5.3 GB to hold), 302k/s, UI responsive (16ms gap)"
+      }
     },
     {
-      "id": 13, "name": "SwiftSync hints — reconstruct from a tiny file", "ui": ["⑬"],
+      "id": 13,
+      "name": "SwiftSync hints — reconstruct from a tiny file",
+      "ui": [
+        "⑬"
+      ],
       "proves": "The full SwiftSync flow: a compact hints file (which outputs survive) lets you reconstruct the UTXO set from blocks with no spend processing (fast / parallelizable), verified by the 32-byte accumulator. Hints carry no trust — wrong hints just fail the check.",
-      "runs_on": "github-pages", "requires": [],
-      "modules": ["swiftsync/hint.js", "swiftsync/validate.js", "swiftsync/hintsfile.js", "swiftsync/varint.js", "node-worker.js", "tools/swiftsync-hints.mjs"],
-      "data": ["data/range.json", "data/range-seed.ndjson"],
-      "verified": { "browser+node": "blocks 26000..26020: 516-byte Elias-Fano hints file (~24.6 B/block; whole testnet4 chain ~3.3 MB) -> reconstructed 1,361-coin UTXO set with no spend processing -> accumulator closes to ZERO (verified)" }
+      "runs_on": "github-pages",
+      "requires": [],
+      "modules": [
+        "swiftsync/hint.js",
+        "swiftsync/validate.js",
+        "swiftsync/hintsfile.js",
+        "swiftsync/varint.js",
+        "node-worker.js",
+        "tools/swiftsync-hints.mjs"
+      ],
+      "data": [
+        "data/range.json",
+        "data/range-seed.ndjson"
+      ],
+      "verified": {
+        "browser+node": "blocks 26000..26020: 516-byte Elias-Fano hints file (~24.6 B/block; whole testnet4 chain ~3.3 MB) -> reconstructed 1,361-coin UTXO set with no spend processing -> accumulator closes to ZERO (verified)"
+      }
     }
   ],
   "servers": [
-    { "name": "serve",  "cmd": "node serve.mjs",  "port": 8088, "deps": [],            "for": "static hosting of acts ②③④⑥ (or use GitHub Pages)" },
-    { "name": "seed",   "cmd": "node seed.mjs",   "port": null, "deps": ["webtorrent"], "for": "act ① WebTorrent seeding (writes magnet.txt; needs serve.mjs for the webseed)" },
-    { "name": "bridge", "cmd": "node bridge.mjs", "port": 8334, "deps": ["ws"],         "for": "act ⑤ WebSocket-to-TCP relay to a testnet4 peer (env: PEER_HOST, PEER_PORT, WS_PORT)" }
+    {
+      "name": "serve",
+      "cmd": "node serve.mjs",
+      "port": 8088,
+      "deps": [],
+      "for": "static hosting of acts ②③④⑥ (or use GitHub Pages)"
+    },
+    {
+      "name": "seed",
+      "cmd": "node seed.mjs",
+      "port": null,
+      "deps": [
+        "webtorrent"
+      ],
+      "for": "act ① WebTorrent seeding (writes magnet.txt; needs serve.mjs for the webseed)"
+    },
+    {
+      "name": "bridge",
+      "cmd": "node bridge.mjs",
+      "port": 8334,
+      "deps": [
+        "ws"
+      ],
+      "for": "act ⑤ WebSocket-to-TCP relay to a testnet4 peer (env: PEER_HOST, PEER_PORT, WS_PORT)"
+    }
   ],
   "run": {
     "github_pages": "Open http://bitcoin-kernel.com/browser-node/ and use buttons ③ ④ ⑥ (acts ① ⑤ need a local server).",
-    "local_static": ["node serve.mjs", "open http://localhost:8088"],
-    "local_act1": ["node tools/gen-snapshot.mjs 250000 snapshot.ndjson", "node serve.mjs &", "npm install", "node seed.mjs"],
-    "local_act5": ["npm install", "have a testnet4 node listening on :48333", "node bridge.mjs", "click ⑤"],
+    "local_static": [
+      "node serve.mjs",
+      "open http://localhost:8088"
+    ],
+    "local_act1": [
+      "node tools/gen-snapshot.mjs 250000 snapshot.ndjson",
+      "node serve.mjs &",
+      "npm install",
+      "node seed.mjs"
+    ],
+    "local_act5": [
+      "npm install",
+      "have a testnet4 node listening on :48333",
+      "node bridge.mjs",
+      "click ⑤"
+    ],
     "tests": "npm test  (validate, adversarial, follow, snapshot — self-contained, uses committed data)"
   },
   "trust_model": "The bridge and torrent/HTTP transports are untrusted: they cannot forge valid blocks or headers because the tab validates everything (PoW, difficulty, scripts, signatures, fees). Their only powers are withholding and eclipsing. assumeUTXO trusts the snapshot's UTXO set until background validation (not included here) re-derives it from genesis.",

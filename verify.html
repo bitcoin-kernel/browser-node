@@ -45,10 +45,13 @@ the accumulator state never exceeds <b>32 bytes</b>. <a href="how-it-works.html"
 <div id="log"></div>
 
 <p class="dim sans" style="margin-top:14px;border-top:1px solid var(--bd);padding-top:10px">
-The full snapshot is distributed by <b>WebTorrent</b> (the original magnet model) — point the URL at a seeded copy or a
-<code>blob:</code> from an in-page WebTorrent fetch. No bridge, no bitcoind: this runs for anyone who opens the page. The
-expected commitment comes from <code>tools/fullchain-node.mjs</code> (a full genesis→tip validation) and
-<code>tools/swiftsync-commit.mjs</code> — they agree, so a match here means this <i>is</i> the real testnet4 UTXO set.</p>
+This page is a <b>static verifier</b>; the data source is a <b>link parameter</b>, so the demo upgrades from localhost to a
+hosted/seeded copy by changing the URL you share — never the code:
+<br>· <code>verify.html?url=https://host/snapshot.dat&amp;auto=1</code> &nbsp;(HTTP / object store / a tunnel)
+<br>· <code>verify.html?magnet=magnet:?xt=…&amp;ws=https://host/snapshot.dat&amp;auto=1</code> &nbsp;(WebTorrent + webseed)
+<br>The <code>expected</code> commitment (default: the testnet4 #141,574 value) is the trust anchor — it comes from
+<code>tools/fullchain-node.mjs</code> (a full genesis→tip validation) and <code>tools/swiftsync-commit.mjs</code>, which
+agree. The data source is verified <i>against</i> it, so pointing <code>?url=</code> anywhere is safe: wrong data simply fails the check.</p>
 
 <script type="module">
 import WebTorrent from './webtorrent.min.js';
@@ -86,31 +89,43 @@ async function run(url, expected) {
   document.querySelectorAll('button').forEach(b => b.disabled = false);
 }
 
-$('prefix').onclick = () => run($('url').value || 'data/utxo-prefix.dat', $('exp').value || null);
-$('full').onclick = () => { $('url').value = 'data/snapshot-full.dat'; $('exp').value = FULL_COMMITMENT; run('data/snapshot-full.dat', FULL_COMMITMENT); };
+// ── The data source is a LINK PARAMETER, not baked in. The page is a static
+//    verifier; you upgrade the demo (localhost → tunnel → object store → WebTorrent)
+//    by changing the URL you share — never the deployed code.
+//      verify.html?url=https://host/snapshot.dat[&auto=1]
+//      verify.html?magnet=magnet:?xt=…&ws=https://host/snapshot.dat[&auto=1]
+//      &expected=<hex>  (defaults to the testnet4 #141,574 commitment)
+const q = new URLSearchParams(location.search);
+const P = { url: q.get('url'), magnet: q.get('magnet'), ws: q.get('ws'), expected: q.get('expected') || FULL_COMMITMENT, auto: q.get('auto') === '1' };
+if (P.url) $('url').value = P.url;
+$('exp').value = P.expected;
 
-// WebTorrent: pull the snapshot peer-to-peer (WebRTC + HTTP webseed), no server in the path.
-$('torrent').onclick = async () => {
+async function webtorrentVerify(magnet, ws, expected) {
   document.querySelectorAll('button').forEach(b => b.disabled = true); $('verdict').innerHTML = '';
   try {
-    const magnet = (await (await fetch('magnet-snapshot.txt')).text()).trim();
     log('WebTorrent: fetching the snapshot peer-to-peer…', 'ok');
-    const webseed = new URL('data/snapshot-full.dat', location.href).href;   // origin webseed, works anywhere
+    const urlList = []; if (ws) urlList.push(ws); urlList.push(new URL('data/snapshot-full.dat', location.href).href); // webseed(s): param + same-origin
     const client = new WebTorrent();
     client.on('error', (e) => log('webtorrent: ' + e.message, 'err'));
-    client.add(magnet, { urlList: [webseed] }, (torrent) => {
+    client.add(magnet, { urlList }, (torrent) => {
       const iv = setInterval(() => { $('mb').textContent = (torrent.downloaded / 1048576).toFixed(0) + ' MB'; $('bar').firstElementChild.style.width = (100 * torrent.progress).toFixed(1) + '%'; }, 1000);
       torrent.on('done', async () => {
         clearInterval(iv); log('download complete — streaming through the accumulator…', 'ok');
-        const blob = await torrent.files[0].blob();
-        const url = URL.createObjectURL(blob);
-        await run(url, FULL_COMMITMENT);
-        URL.revokeObjectURL(url);
+        const blob = await torrent.files[0].blob(); const u = URL.createObjectURL(blob);
+        await run(u, expected); URL.revokeObjectURL(u);
       });
     });
-  } catch (e) { $('verdict').innerHTML = `<span class="err">error: ${e.message}</span> <span class="dim">(seed it: node seed-snapshot.mjs)</span>`; log('error: ' + e.message, 'err'); document.querySelectorAll('button').forEach(b => b.disabled = false); }
-};
-log('ready — quick-check the prefix, or verify the full snapshot via WebTorrent.', 'dim');
+  } catch (e) { $('verdict').innerHTML = `<span class="err">error: ${e.message}</span>`; log('error: ' + e.message, 'err'); document.querySelectorAll('button').forEach(b => b.disabled = false); }
+}
+const magnetSource = async () => P.magnet || (await (await fetch('magnet-snapshot.txt')).text()).trim();
+
+$('prefix').onclick = () => run('data/utxo-prefix.dat', null);   // the 1 MB committed prefix — always works on Pages
+$('torrent').onclick = async () => { try { webtorrentVerify(await magnetSource(), P.ws, $('exp').value || FULL_COMMITMENT); } catch { $('verdict').innerHTML = '<span class="err">no magnet — pass ?magnet=… or run node seed-snapshot.mjs</span>'; } };
+$('full').onclick = () => run($('url').value || 'data/snapshot-full.dat', $('exp').value || FULL_COMMITMENT);
+
+// A shared link just runs: ?url=… (HTTP) or ?magnet=… (WebTorrent), with &auto=1
+if (P.auto) { if (P.magnet) $('torrent').click(); else if (P.url) $('full').click(); }
+log(P.url || P.magnet ? `source from link: ${P.magnet ? 'WebTorrent magnet' : P.url}` : 'ready — quick-check the prefix, or point ?url= / ?magnet= at any host.', 'dim');
 </script>
 </body>
 </html>
