@@ -31,7 +31,8 @@ the accumulator state never exceeds <b>32 bytes</b>. <a href="how-it-works.html"
 
 <p>
   <button id="prefix">▶ Quick check — the 1 MB prefix</button>
-  <button id="full">▶ Verify the full testnet4 snapshot (826 MB)</button>
+  <button id="torrent">▶ Verify the full snapshot via WebTorrent (no server)</button>
+  <button id="full">▶ …or via HTTP</button>
 </p>
 <p class="dim">snapshot URL: <input id="url" size="34" value="data/utxo-prefix.dat"> expected: <input id="exp" size="20" placeholder="(commitment hex)"></p>
 <div id="bar"><i></i></div>
@@ -50,6 +51,7 @@ expected commitment comes from <code>tools/fullchain-node.mjs</code> (a full gen
 <code>tools/swiftsync-commit.mjs</code> — they agree, so a match here means this <i>is</i> the real testnet4 UTXO set.</p>
 
 <script type="module">
+import WebTorrent from './webtorrent.min.js';
 const $ = (id) => document.getElementById(id);
 const log = (m, c='') => { const t = new Date().toISOString().slice(11,19); $('log').innerHTML += `<span class="dim">${t}</span> <span class="${c}">${m}</span>\n`; $('log').scrollTop = $('log').scrollHeight; };
 const fmt = (n) => Number(n).toLocaleString();
@@ -86,7 +88,29 @@ async function run(url, expected) {
 
 $('prefix').onclick = () => run($('url').value || 'data/utxo-prefix.dat', $('exp').value || null);
 $('full').onclick = () => { $('url').value = 'data/snapshot-full.dat'; $('exp').value = FULL_COMMITMENT; run('data/snapshot-full.dat', FULL_COMMITMENT); };
-log('ready — quick-check the prefix, or verify the full snapshot.', 'dim');
+
+// WebTorrent: pull the snapshot peer-to-peer (WebRTC + HTTP webseed), no server in the path.
+$('torrent').onclick = async () => {
+  document.querySelectorAll('button').forEach(b => b.disabled = true); $('verdict').innerHTML = '';
+  try {
+    const magnet = (await (await fetch('magnet-snapshot.txt')).text()).trim();
+    log('WebTorrent: fetching the snapshot peer-to-peer…', 'ok');
+    const webseed = new URL('data/snapshot-full.dat', location.href).href;   // origin webseed, works anywhere
+    const client = new WebTorrent();
+    client.on('error', (e) => log('webtorrent: ' + e.message, 'err'));
+    client.add(magnet, { urlList: [webseed] }, (torrent) => {
+      const iv = setInterval(() => { $('mb').textContent = (torrent.downloaded / 1048576).toFixed(0) + ' MB'; $('bar').firstElementChild.style.width = (100 * torrent.progress).toFixed(1) + '%'; }, 1000);
+      torrent.on('done', async () => {
+        clearInterval(iv); log('download complete — streaming through the accumulator…', 'ok');
+        const blob = await torrent.files[0].blob();
+        const url = URL.createObjectURL(blob);
+        await run(url, FULL_COMMITMENT);
+        URL.revokeObjectURL(url);
+      });
+    });
+  } catch (e) { $('verdict').innerHTML = `<span class="err">error: ${e.message}</span> <span class="dim">(seed it: node seed-snapshot.mjs)</span>`; log('error: ' + e.message, 'err'); document.querySelectorAll('button').forEach(b => b.disabled = false); }
+};
+log('ready — quick-check the prefix, or verify the full snapshot via WebTorrent.', 'dim');
 </script>
 </body>
 </html>
