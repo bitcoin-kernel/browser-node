@@ -24,10 +24,10 @@
 </head>
 <body>
 <h1>bitcoin-kernel / browser-node — mesh <span class="dim">(block propagation · PoC)</span></h1>
-<p class="dim"><b>Open this page in two tabs</b> (or send the link to a friend). The two tabs become Bitcoin peers to each other
-over <b>WebRTC — no server in the data path</b> — meeting in a room on a signaling server. Hit <b>Seed 5000</b> in one tab:
-it pulls <b>5000 real blocks</b> from the network (via the bridge) and <b>propagates them to the other tab</b> over the channel,
-which <b>validates every one</b> (proof-of-work + merkle root). That's block propagation at volume, in a browser mesh.
+<p class="dim"><b>Open this page in two or more tabs</b> (or send the link to a friend). The tabs become Bitcoin peers to each other
+over <b>WebRTC — no server in the data path</b> — every tab connects to every other (a full mesh) in a room on a signaling server.
+Hit <b>Seed 5000</b> in one tab: it pulls <b>5000 real blocks</b> from the network (via the bridge) and <b>propagates them to the
+other peers</b>, which <b>validate every one</b> (proof-of-work + merkle root). That's block propagation at volume, in a browser mesh.
 <a href="node.html">the node</a> · <a href="how-it-works.html">how it works</a></p>
 
 <p>
@@ -82,11 +82,8 @@ async function loadEngine() {
   genesisHash = codec.blockHash(codec.decode('BlockHeader', vectors.genesisHeader));
 }
 
-// Backpressure: don't overrun the data channel's send buffer during a big burst.
-function drain(dc, max = 4 * 1024 * 1024) {
-  if (!dc || dc.bufferedAmount < max) return Promise.resolve();
-  return new Promise((res) => { dc.bufferedAmountLowThreshold = max / 2; const h = () => { dc.removeEventListener('bufferedamountlow', h); res(); }; dc.addEventListener('bufferedamountlow', h); });
-}
+// Backpressure: don't overrun any connected peer's send buffer during a big burst.
+async function drain(p, max = 4 * 1024 * 1024) { while (p.bufferedHigh(max)) await new Promise((r) => setTimeout(r, 50)); }
 
 // SEED: pull N real blocks from the network (via the bridge), validate each, and
 // relay them to the mesh peer — block propagation at volume, browser→browser.
@@ -124,8 +121,8 @@ async function seedBlocks(n = 5000) {
       }, timeoutMs: 30000 });
       for (const bytes of out) {
         if (bytes.length > MAX_MSG) { skipped++; continue; }   // too big for one DC message (chunking is a TODO)
-        await drain(peer.dc);
-        peer.send('block', toHex(bytes));
+        await drain(peer);
+        peer.send('block', toHex(bytes));   // broadcast to every connected peer
         got++; $('seeded').textContent = fmt(got);
       }
       setStatus(`seed: relaying ${fmt(got)}/${fmt(hashes.length)}${skipped ? ` (${skipped} too large, skipped)` : ''}…`, 'warn');
@@ -159,14 +156,15 @@ $('connect').onclick = async () => {
     if (!be) await loadEngine();
     setStatus(`joining the mesh room ${room.slice(0,10)}…`, 'warn');
     log(`connecting to the mesh (signaling ${signalUrl})…`);
-    peer = new MeshPeer(p2p, codec, { log, onMessage, onOpen: (role) => {
-      $('dot').classList.add('live'); $('mesh').textContent = 'connected';
-      $('role').textContent = `you are the ${role}`;
-      $('seed').disabled = false;
-      setStatus('● connected to a peer — seed 1000 blocks', 'ok');
-      log(`mesh connected (you are the ${role}) — a direct browser↔browser channel, no server in the path`, 'ok');
+    peer = new MeshPeer(p2p, codec, { log, onMessage, onPeers: (count) => {
+      $('dot').classList.toggle('live', count > 0); $('mesh').textContent = count;
+      $('role').textContent = `${count} peer${count === 1 ? '' : 's'} connected`;
+      $('seed').disabled = count < 1;
+      setStatus(count > 0 ? `● connected · ${count} peer${count === 1 ? '' : 's'} — seed blocks` : '● in the mesh room — waiting for a peer', 'ok');
+      log(`mesh: connected to ${count} peer${count === 1 ? '' : 's'} (direct browser↔browser, no server)`, 'ok');
     } });
     await peer.connect(signalUrl, { room });
+    if (peer.peerCount === 0) { $('mesh').textContent = '0'; setStatus('● in the mesh room — open this page in another tab to connect', 'warn'); log('in the mesh room — waiting for another tab to join…'); }
   } catch (e) {
     setStatus('mesh error: ' + e.message, 'err');
     log('mesh: ' + e.message + ' — is the page open in a second tab? (one tab waits for the other)', 'err');
