@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>bitcoin-kernel/browser-node — toward a full node (tabs · testnet4)</title>
+<style>
+  :root { --bg:#fff; --fg:#16181d; --mut:#5b6470; --bd:#e6e8eb; --pan:#fafbfc; --ac:#e8830c; --ac2:#0969da; --good:#1a7f37; --bad:#cf222e; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; color-scheme:light; }
+  body { background:var(--bg); color:var(--fg); font:14px/1.5 var(--mono); max-width:860px; margin:24px auto; padding:0 16px; }
+  h1 { font-size:18px; } a { color:var(--ac2); }
+  button { background:var(--pan); color:var(--fg); border:1px solid var(--bd); border-radius:6px; padding:9px 16px; cursor:pointer; font:inherit; }
+  button:hover { background:#f0f2f4; border-color:var(--ac); } button:disabled { opacity:.45; cursor:default; }
+  .grid { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin:14px 0; }
+  .card { border:1px solid var(--bd); border-radius:8px; padding:10px 12px; background:var(--pan); }
+  .card .k { color:var(--mut); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+  .card .v { font-size:20px; color:var(--fg); margin-top:3px; }
+  .card .s { color:var(--mut); font-size:12px; }
+  #status { border:1px solid var(--bd); border-radius:6px; padding:8px 12px; background:var(--pan); }
+  #log { background:var(--pan); border:1px solid var(--bd); border-radius:6px; padding:12px; height:170px; overflow:auto; white-space:pre-wrap; margin-top:12px; }
+  .ok{color:var(--good)} .warn{color:var(--ac)} .err{color:var(--bad)} .dim{color:var(--mut)}
+  .dot{ display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--mut); margin-right:6px; vertical-align:middle; }
+  .dot.live{ background:var(--good); }
+  .cbar{ height:4px; background:var(--bd); border-radius:3px; overflow:hidden; margin-top:7px; }
+  .cbar>i{ display:block; height:100%; width:0; background:var(--ac); transition:width .12s linear; }
+  .cbar.done>i{ background:var(--good); }
+  .tabs{ display:flex; flex-wrap:wrap; gap:6px; margin:16px 0 10px; }
+  .tab{ background:var(--pan); border:1px solid var(--bd); border-radius:6px; padding:8px 12px; cursor:pointer; color:var(--mut); font:inherit; }
+  .tab:hover{ border-color:var(--ac); }
+  .tab.active{ color:var(--fg); border-color:var(--ac); font-weight:700; }
+  .panel.hidden{ display:none; }
+</style>
+</head>
+<body>
+<h1>bitcoin-kernel / browser-node — toward a full node <span class="dim">(testnet4 · PoC)</span></h1>
+<p class="dim">Two lanes. <b>① Node</b> stays at the chain tip cheaply — header sync, an assumeUTXO snapshot, OPFS persistence, and a
+<b>SwiftSync</b> 32-byte set-consistency check. <b>② Validation</b> deep-checks blocks with full scripts + signatures (WASM secp,
+in a Web Worker) on a bounded window — meant to run lazily, in the background. Press Start; switch tabs to watch each lane.
+This is the same pipeline as <a href="node.html">the running node</a>, just split into two tabs. <a href="index.html">← the eleven acts</a></p>
+
+<p><button id="start">▶ Start node</button> <span id="status" class="dim">idle</span></p>
+
+<div class="tabs">
+  <button class="tab active" data-tab="node">① Node — sync · assumeUTXO · SwiftSync · the tip</button>
+  <button class="tab" data-tab="valid">② Validation — full consensus (blocks)</button>
+</div>
+
+<section class="panel" id="panel-node">
+  <div class="grid">
+    <div class="card"><div class="k">network</div><div class="v">testnet4</div><div class="s" id="engine">engine: idle</div></div>
+    <div class="card"><div class="k"><span class="dot" id="hdot"></span>header tip (live)</div><div class="v" id="htip">—</div><div class="s" id="hsub">via WS↔TCP bridge</div><div class="cbar" id="hbarw"><i id="hbar"></i></div></div>
+    <div class="card"><div class="k">UTXO set</div><div class="v" id="utxo">—</div><div class="s">RAM, checkpointed to OPFS</div></div>
+    <div class="card"><div class="k">persistence</div><div class="v" id="ckpt">—</div><div class="s">OPFS sync access handle</div></div>
+    <div class="card"><div class="k">set consistency</div><div class="v" id="swift">—</div><div class="s" id="swiftsub">SwiftSync · 32-byte accumulator</div></div>
+  </div>
+</section>
+
+<section class="panel hidden" id="panel-valid">
+  <div class="grid">
+    <div class="card"><div class="k">full-consensus window</div><div class="v" id="vheight">—</div><div class="s" id="vsub">every script + signature, in worker</div><div class="cbar" id="vbarw"><i id="vbar"></i></div></div>
+    <div class="card"><div class="k">blocks validated</div><div class="v" id="nblocks">0</div><div class="s" id="bps"></div></div>
+  </div>
+  <p class="dim" style="font-size:12px; margin-top:8px">This lane runs <b>full consensus</b> — every script + signature (WASM secp), in a worker — on a <b>bounded window</b> of blocks. The full UTXO set won't fit in a tab (the ~25 GB wall); the Node tab's <b>SwiftSync</b> check is how that scales. Today it validates the bundled sample; growing it is the next step.</p>
+</section>
+
+<div id="log"></div>
+
+<p class="dim" style="margin-top:14px; border-top:1px solid var(--bd); padding-top:10px">
+Honest scope: this runs the node's real loop over a bounded range of real testnet4 blocks. Reaching the live tip
+with the <b>full</b> UTXO set hits a memory wall — the whole 14.1M-coin set is ~25 GB, over a tab's limit.
+<a href="index.html#">SwiftSync (act ⑪)</a> removes it: validate set-consistency with a <b>32-byte accumulator</b> instead of
+the set — <b>now wired into this loop</b> (the "set consistency" card above). What remains is applying it at
+<i>scale</i>: a large range / full IBD with a WebTorrent hints file + streamed prevout data for scripts, so the node
+validates to the live tip holding nothing but the accumulator. <code>tools/reach-tip.mjs</code> already reaches the
+live tip today by keeping only the coins the forward blocks spend. Header sync needs a bridge to a testnet4 peer:
+either the local WS bridge (<code>node bridge.mjs</code>, default) or, for a click-and-run demo from anywhere, a
+WebRTC bridge signaled by a server — pass <code>?signal=wss://your.pod/.webrtc&amp;room=&lt;hex&gt;</code>
+(<code>node bridge-webrtc.mjs</code> on the other end). Without any bridge, the validation pipeline still runs.
+Add <code>?replay=1</code> to re-watch the full genesis→tip header climb (it otherwise resumes instantly from OPFS).</p>
+
+<script type="module">
+import { connect as liveConnect, syncToTip } from './live-feed.js';
+
+const $ = (id) => document.getElementById(id);
+const log = (m, c='') => { const t = new Date().toISOString().slice(11,19); $('log').innerHTML += `<span class="dim">${t}</span> <span class="${c}">${m}</span>\n`; $('log').scrollTop = $('log').scrollHeight; };
+const fmt = (n) => Number(n).toLocaleString();
+const setStatus = (m, c='') => $('status').innerHTML = `<span class="${c}">${m}</span>`;
+
+// ── worker RPC with progress events ──
+let _w = null, _id = 0; const _rpc = new Map(); let _onProgress = null;
+function wcall(cmd) {
+  if (!_w) {
+    _w = new Worker('node-worker.js', { type: 'module' });
+    _w.onmessage = (e) => { const d = e.data; if (d.progress) { _onProgress && _onProgress(d); return; } const p = _rpc.get(d.id); if (!p) return; _rpc.delete(d.id); d.ok ? p.resolve(d.result) : p.reject(new Error(d.error)); };
+    _w.onerror = (e) => log('worker error: ' + (e.message || e.filename), 'err');
+  }
+  const id = ++_id; _w.postMessage({ id, cmd });
+  return new Promise((res, rej) => _rpc.set(id, { resolve: res, reject: rej }));
+}
+
+// ── live header feed (main thread; optional — needs a bridge) ──
+// Transport is a LINK PARAMETER, like the snapshot source on verify.html:
+//   ?bridge=ws://localhost:8334                 → WsPeer (local WS↔TCP bridge)
+//   ?signal=wss://your.pod/.webrtc[&room=<hex>] → RtcPeer (WebRTC↔TCP bridge,
+//        signaled by a JSS pod — NAT-friendly, runs anywhere, click-and-run)
+async function runHeaderFeed() {
+  const q = new URLSearchParams(location.search);
+  const signalUrl = q.get('signal'), room = q.get('room'), bridgeUrl = q.get('bridge') || 'ws://localhost:8334';
+  const webrtc = !!signalUrl, replay = q.get('replay') === '1';   // ?replay=1 → re-watch the full genesis→tip climb (skip OPFS resume)
+  $('hsub').textContent = webrtc ? 'via WebRTC' : 'via WS↔TCP bridge';
+  $('hbar').style.width = '0'; $('hbarw').classList.remove('done');
+  try {
+    const jl = (n) => fetch(`./engine/schema/${n}.jsonld`).then(r => r.json());
+    const [core, proof, p2p, chain, validate] = await Promise.all(['core','proof','p2p','chain','validate'].map(jl));
+    const vectors = await (await fetch('./data/testnet4.json')).json();
+    log(`connecting header feed (${webrtc ? 'WebRTC signaling ' + signalUrl : 'WS bridge ' + bridgeUrl})${replay ? ' — replay from genesis' : ''}…`);
+    const session = await liveConnect({ bridgeUrl, signalUrl, room, schemas: { core, proof, p2p, chain, validate }, vectors, log, persist: !replay });
+    const from = session.resumedFrom || 0;
+    if (from) $('htip').textContent = '#' + fmt(from);
+    // Climb: every header is validated (PoW, BIP94 retarget, linkage). Show the
+    // count rising, the rate, and a bar toward the peer's advertised tip.
+    const target = session.peer?.peerVersion?.startHeight || 0;
+    const hs = performance.now();
+    await syncToTip(session, { onBatch: ({ tip }) => {
+      $('htip').textContent = '#' + fmt(tip.height);
+      if (target > from) $('hbar').style.width = Math.min(100, 100 * tip.height / target).toFixed(1) + '%';
+      const rate = Math.round((tip.height - from) / ((performance.now() - hs) / 1000));
+      $('hsub').textContent = `${webrtc ? 'WebRTC' : 'bridge'} · validating… ${isFinite(rate) && rate > 0 ? fmt(rate) + ' hdr/s' : ''}`;
+    } });
+    const tip = session.store.tip();
+    $('hdot').classList.add('live'); $('htip').textContent = '#' + fmt(tip.height);
+    $('hbar').style.width = '100%'; $('hbarw').classList.add('done');
+    $('hsub').textContent = (webrtc ? 'WebRTC' : 'bridge') + ': synced + validated, live';
+    log(`header tip: #${fmt(tip.height)} (validated from genesis)`, 'ok');
+  } catch (e) {
+    $('htip').textContent = 'offline';
+    $('hsub').innerHTML = webrtc ? '<span class="warn">signaling/bridge unreachable</span>' : '<span class="warn">run node bridge.mjs</span>';
+    log('header feed: ' + e.message + (webrtc ? ' — WebRTC bridge offline' : ' — bridge offline') + '; validation pipeline still runs', 'warn');
+  }
+}
+
+// ── the node loop ──
+$('start').onclick = async () => {
+  $('start').disabled = true;
+  try {
+    setStatus('starting worker…');
+    log('— starting node —', 'ok');
+    $('engine').textContent = 'loading engine + WASM secp in worker…';
+    await wcall('init');
+    $('engine').innerHTML = 'engine + <b>WASM secp</b> · in worker';
+    log('worker ready: engine + WASM secp loaded off the main thread', 'ok');
+
+    runHeaderFeed();   // parallel, non-blocking
+
+    setStatus('bootstrapping UTXO + validating forward…', 'warn');
+    // The worker validates the range fast (~ms/block); buffer the real per-block
+    // results and reveal them at a watchable cadence so you can watch the chain
+    // advance block by block — every number shown is a real validated block.
+    $('vbarw').classList.remove('done'); $('vbar').style.width = '0';
+    const queue = []; let total = 0, n = 0; const t0 = performance.now();
+    _onProgress = (b) => { if (b.progress !== 'block') return; total = b.total || total; queue.push(b); };
+    const render = (b) => {
+      n++;
+      $('vheight').textContent = '#' + fmt(b.height);
+      $('utxo').textContent = fmt(b.utxoSize) + ' coins';
+      $('nblocks').textContent = fmt(n);
+      $('bps').textContent = (n / ((performance.now() - t0) / 1000)).toFixed(0) + ' blocks/s';
+      if (total) $('vbar').style.width = (100 * n / total).toFixed(1) + '%';
+      setStatus(`validating forward — block #${fmt(b.height)}${total ? ` (${n}/${total})` : ''}…`, 'warn');
+    };
+    let done = false;
+    const followP = wcall('followRange');
+    followP.then(() => { done = true; }, () => { done = true; });   // resolve drain even if validation errors
+    await new Promise((resolve) => { const iv = setInterval(() => { if (queue.length) render(queue.shift()); else if (done) { clearInterval(iv); resolve(); } }, 120); });
+    const r = await followP;
+    _onProgress = null;
+    $('vbar').style.width = '100%'; $('vbarw').classList.add('done');
+    $('vheight').textContent = '#' + fmt(r.end);
+    $('vsub').innerHTML = `<span class="ok">✓ window #${fmt(r.start)}–${fmt(r.end)} fully checked</span> — full scripts &amp; sigs (full set is memory-bound)`;
+    log(`validated forward #${fmt(r.start)}→#${fmt(r.end)}: ${fmt(r.validated)}/${fmt(r.total)} blocks, UTXO ${fmt(r.utxoStart)}→${fmt(r.utxoEnd)} in ${r.ms.toFixed(0)}ms (worker, WASM secp)`, 'ok');
+
+    const ck = await wcall('checkpoint');
+    $('ckpt').textContent = (ck.bytes/1048576).toFixed(2) + ' MB';
+    log(`UTXO set checkpointed to OPFS (${(ck.bytes/1048576).toFixed(2)} MB, sync access handle)`, 'ok');
+
+    // SwiftSync set-consistency check in the worker — 32-byte state, no UTXO set
+    const ss = await wcall('swiftsync');
+    $('swift').innerHTML = ss.zero ? '<span class="ok">✓ reconciled</span>' : '<span class="err">✗ non-zero</span>';
+    $('swiftsub').textContent = `SwiftSync · ${ss.stateBytes} bytes · ${fmt(ss.created)}+ ${fmt(ss.spent)}− · ${ss.ms.toFixed(0)}ms`;
+    log(`SwiftSync set-consistency: ${ss.zero ? 'reconciles to ZERO' : 'NON-ZERO'} with ${ss.stateBytes} bytes — no UTXO set held for double-spend checks (the path past the 25 GB ceiling at scale)`, ss.zero ? 'ok' : 'err');
+
+    setStatus(`● running — headers validating to the live tip · full-consensus deep-check of a ${fmt(r.validated)}-block window ✓ · set-consistency reconciled (SwiftSync, 32 B)`, 'ok');
+    log('node running. Headers reach the live tip; a bounded window is deep-validated (full scripts/sigs); SwiftSync scales that check to the whole chain in 32 bytes.', 'ok');
+  } catch (e) { setStatus('error: ' + e.message, 'err'); log('node error: ' + e.message, 'err'); console.error(e); $('start').disabled = false; }
+};
+
+// tabs — pure UI switch; does not touch the node pipeline above
+document.querySelectorAll('.tab').forEach((b) => b.addEventListener('click', () => {
+  document.querySelectorAll('.tab').forEach((x) => x.classList.toggle('active', x === b));
+  document.querySelectorAll('.panel').forEach((p) => p.classList.toggle('hidden', p.id !== 'panel-' + b.dataset.tab));
+}));
+
+log('idle — press ▶ Start node.', 'dim');
+</script>
+</body>
+</html>
