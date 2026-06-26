@@ -10,6 +10,9 @@ import { setVerifyBackend } from './engine/codec/secp256k1.js';
 import { sha256 } from './engine/codec/hash.js';
 import { Accumulator } from './swiftsync/accumulator.js';
 import { encodeOutpoint } from './swiftsync/outpoint.js';
+import { generateHints, reconstructUtxo } from './swiftsync/hint.js';
+import { applyBlocks } from './swiftsync/validate.js';
+import { encodeHintsfile } from './swiftsync/hintsfile.js';
 
 let codec, be;
 let snap = null;             // the worker's RAM-resident coin view
@@ -106,7 +109,26 @@ async function scaleAccumulate({ n = 3_000_000 } = {}) {
   return { n, ms, perSec: Math.round(n / (ms / 1000)), stateBytes: 32, digest: Array.from(acc.digest()).map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 16) };
 }
 
-const handlers = { init, followRange, checkpoint, resume, swiftsync, scaleAccumulate };
+// Full SwiftSync: generate a compact hints file, reconstruct the UTXO set from
+// blocks + hints (no spend processing), and verify it with the accumulator.
+async function swiftsyncHints() {
+  const txidOf = (tx) => codec.txid(tx);
+  const range = await (await fetch('data/range.json')).json();
+  const blocks = range.blocks.map((h) => codec.decode('Block', h));
+  const seed = (await (await fetch('data/range-seed.ndjson')).text()).split('\n').slice(1).filter(Boolean).map((l) => JSON.parse(l)[0]);
+  const t0 = performance.now();
+  const { height, blockHints } = generateHints(blocks, { txidOf });
+  const hintsBytes = encodeHintsfile({ height, blockHints }).length;
+  const surviving = blockHints.reduce((s, a) => s + a.length, 0);
+  const utxo = reconstructUtxo(blocks, blockHints, { txidOf });
+  const acc = new Accumulator({ sha256 });
+  for (const k of seed) { const i = k.lastIndexOf(':'); acc.add(encodeOutpoint({ txid: k.slice(0, i), vout: +k.slice(i + 1) })); }
+  applyBlocks(blocks, { txidOf, acc });
+  for (const k of utxo) { const i = k.lastIndexOf(':'); acc.spend(encodeOutpoint({ txid: k.slice(0, i), vout: +k.slice(i + 1) })); }
+  return { blocks: blocks.length, surviving, hintsBytes, perBlock: +(hintsBytes / blocks.length).toFixed(1), reconstructed: utxo.size, verified: acc.isZero(), chainMB: +((hintsBytes / blocks.length * 141680) / 1048576).toFixed(1), ms: performance.now() - t0 };
+}
+
+const handlers = { init, followRange, checkpoint, resume, swiftsync, scaleAccumulate, swiftsyncHints };
 self.onmessage = async (e) => {
   const { id, cmd, args } = e.data;
   try { self.postMessage({ id, ok: true, result: await handlers[cmd](args) }); }

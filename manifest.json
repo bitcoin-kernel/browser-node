@@ -94,6 +94,14 @@
       "runs_on": "github-pages", "requires": [],
       "modules": ["node-worker.js", "swiftsync/accumulator.js", "swiftsync/outpoint.js", "tools/swiftsync-commit.mjs"],
       "verified": { "node": "tools/swiftsync-commit.mjs: 14,129,063 real coins (826 MB snapshot) -> 32-byte commitment af37b01d…, RSS flat at 0.90 GB (the input file, not 25 GB), 73s", "browser": "3,000,000 outpoints streamed through the accumulator in the worker -> 32-byte state (vs ~5.3 GB to hold), 302k/s, UI responsive (16ms gap)" }
+    },
+    {
+      "id": 13, "name": "SwiftSync hints — reconstruct from a tiny file", "ui": ["⑬"],
+      "proves": "The full SwiftSync flow: a compact hints file (which outputs survive) lets you reconstruct the UTXO set from blocks with no spend processing (fast / parallelizable), verified by the 32-byte accumulator. Hints carry no trust — wrong hints just fail the check.",
+      "runs_on": "github-pages", "requires": [],
+      "modules": ["swiftsync/hint.js", "swiftsync/validate.js", "swiftsync/hintsfile.js", "swiftsync/varint.js", "node-worker.js", "tools/swiftsync-hints.mjs"],
+      "data": ["data/range.json", "data/range-seed.ndjson"],
+      "verified": { "browser+node": "blocks 26000..26020: 516-byte Elias-Fano hints file (~24.6 B/block; whole testnet4 chain ~3.3 MB) -> reconstructed 1,361-coin UTXO set with no spend processing -> accumulator closes to ZERO (verified)" }
     }
   ],
   "servers": [

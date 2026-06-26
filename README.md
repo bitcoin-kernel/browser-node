@@ -47,6 +47,7 @@ and the browser-node design ([`bitcoin-kernel/node`](https://github.com/bitcoin-
 | ⑩ | **Run the node in a Web Worker (scale)** | engine + WASM secp + UTXO store + OPFS sync-handles run off the main thread, so validation/checkpoints don't freeze the UI | **GitHub Pages** | follow 21 blocks in a Worker: UI responsive (16 ms frame gap) vs frozen on the main thread (~1063 ms) |
 | ⑪ | **SwiftSync — stateless validation** | set-consistency via a **32-byte accumulator** (add created, subtract spent) instead of the ~25 GB UTXO set | **GitHub Pages** | blocks 26000–26020 cancel to **ZERO** with 32 bytes of state; a fabricated spend is detected; 72 ms |
 | ⑫ | **SwiftSync at scale** | the **full** real UTXO set committed via the accumulator with set-state held at **32 bytes**, not 25 GB | **GitHub Pages** | Node: **14.1M coins → 0.9 GB RSS** (the file), 32-byte commitment; tab: 3M coins streamed in the worker → 32 bytes, UI responsive |
+| ⑬ | **SwiftSync hints** | reconstruct the UTXO set from blocks + a tiny **hints file** (no spend processing), verified by the accumulator | **GitHub Pages** | 26000–26020: **516-byte** hints (~25 B/block; whole chain ≈ 3.3 MB) → 1,361-coin set rebuilt → accumulator **ZERO ✓** |
 
 Acts ③ ④ ⑥ are fully static and work on GitHub Pages. Acts ① (torrent seeding) and ⑤ (the bridge) need a
 local server — see below.

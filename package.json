@@ -11,7 +11,7 @@
     "bridge": "node bridge.mjs",
     "seed": "node seed.mjs",
     "gen-snapshot": "node tools/gen-snapshot.mjs 250000 snapshot.ndjson",
-    "test": "node validate-node-test.mjs && node adversarial-test.mjs && node follow-node-test.mjs && node snapshot-node-test.mjs && node wasm-secp-test.mjs && node swiftsync-test.mjs"
+    "test": "node validate-node-test.mjs && node adversarial-test.mjs && node follow-node-test.mjs && node snapshot-node-test.mjs && node wasm-secp-test.mjs && node swiftsync-test.mjs && node tools/swiftsync-hints.mjs"
   },
   "optionalDependencies": {
     "webtorrent": "^2.8.0",

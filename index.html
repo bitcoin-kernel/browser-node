@@ -119,6 +119,14 @@ responsive) to show the 32-byte state holds at scale, in the tab.</p>
 <p><button id="scale">⑫ Stream millions of coins → 32-byte state</button></p>
 <div id="scaleresult" class="dim">— not run yet —</div>
 
+<h2>⑪ SwiftSync hints — build the UTXO set from a tiny file</h2>
+<p class="dim">The full SwiftSync flow: generate a compact <b>hints file</b> (which outputs survive), <b>reconstruct</b> the
+UTXO set from blocks + hints with <b>no spend processing</b> (fast, parallelizable), and <b>verify</b> it with the
+32-byte accumulator. The hints are tiny (~25 bytes/block — the whole testnet4 chain ≈ a few MB), and they carry no
+trust: wrong hints just fail the accumulator check.</p>
+<p><button id="hints">⑬ Generate hints → reconstruct → verify</button></p>
+<div id="hintsresult" class="dim">— not run yet —</div>
+
 <script type="module">
 import WebTorrent from './webtorrent.min.js';
 import { ShardedUtxo } from './sharded-utxo-browser.js';
@@ -541,7 +549,26 @@ document.getElementById('scale').onclick = async () => {
   btn.disabled = false;
 };
 
-log('ready. ① torrent → ③ validate → ④ follow → ⑤ live → ⑥ snapshot → ⑦⑧ persist → ⑨ WASM → ⑩ worker → ⑪⑫ SwiftSync.', 'ok');
+// ── Path ⑬: full SwiftSync — hints + reconstruct + verify (in the worker) ──
+document.getElementById('hints').onclick = async () => {
+  const btn = document.getElementById('hints'); btn.disabled = true;
+  const $r = document.getElementById('hintsresult');
+  try {
+    log('— SwiftSync hints: generate → reconstruct → verify —', 'ok');
+    await workerCall('init');
+    const h = await workerCall('swiftsyncHints');
+    $r.innerHTML = `<table>
+      <tr><td>range</td><td class="n">26000–26020</td><td class="dim">${fmt(h.blocks)} blocks · ${h.ms.toFixed(0)}ms</td></tr>
+      <tr><td>hints file</td><td class="n">${fmt(h.hintsBytes)} B</td><td class="dim">Elias-Fano · ${h.perBlock} B/block · whole chain ≈ ${h.chainMB} MB</td></tr>
+      <tr><td>reconstructed UTXO</td><td class="n">${fmt(h.reconstructed)} coins</td><td class="dim">from blocks + hints, no spend processing</td></tr>
+      <tr><td>accumulator verify</td><td class="n ${h.verified ? 'ok' : 'err'}">${h.verified ? 'ZERO ✓' : '✗'}</td><td class="dim">${h.verified ? 'hints honest, set correct' : 'inconsistent'}</td></tr>
+    </table><p class="${h.verified ? 'ok' : 'err'}">${h.verified ? `✅ UTXO set rebuilt from a ${fmt(h.hintsBytes)}-byte hints file (no spends processed) and verified by the 32-byte accumulator — SwiftSync end to end. The whole testnet4 chain's hints are ≈ ${h.chainMB} MB.` : '❌ hints inconsistent'}</p>`;
+    log(`SwiftSync hints: ${fmt(h.hintsBytes)}-byte file → reconstructed ${fmt(h.reconstructed)} coins, accumulator-verified (whole chain ≈ ${h.chainMB} MB)`, h.verified ? 'ok' : 'err');
+  } catch (e) { $r.innerHTML = `<span class="err">error: ${e.message}</span>`; log('hints error: ' + e.message, 'err'); console.error(e); }
+  btn.disabled = false;
+};
+
+log('ready. ① torrent → ③ validate → ④ follow → ⑤ live → ⑥ snapshot → ⑦⑧ persist → ⑨ WASM → ⑩ worker → ⑪⑫⑬ SwiftSync.', 'ok');
 </script>
 </body>
 </html>
