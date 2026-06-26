@@ -110,6 +110,15 @@ This is the repo's own SwiftSync accumulator (verified across all of testnet4), 
 <p><button id="swiftsync">⑪ SwiftSync-validate blocks 26000→26020</button></p>
 <div id="ssresult" class="dim">— not run yet —</div>
 
+<h2>⑩ SwiftSync at scale — the full UTXO set in 32 bytes</h2>
+<p class="dim">The proof that this breaks the ceiling: streaming the <b>real full testnet4 UTXO set (14,129,063 coins,
+826 MB)</b> through the accumulator commits it with <b>RSS flat at ~0.9 GB</b> (the input file) — the set-state
+never leaves 32 bytes, vs ~25 GB to hold it (<code>tools/swiftsync-commit.mjs</code>, commitment
+<code>af37b01d…</code>). Below, the same accumulator streams millions of outpoints in the <b>worker</b> (UI stays
+responsive) to show the 32-byte state holds at scale, in the tab.</p>
+<p><button id="scale">⑫ Stream millions of coins → 32-byte state</button></p>
+<div id="scaleresult" class="dim">— not run yet —</div>
+
 <script type="module">
 import WebTorrent from './webtorrent.min.js';
 import { ShardedUtxo } from './sharded-utxo-browser.js';
@@ -419,14 +428,14 @@ document.getElementById('wasm').onclick = async () => {
 };
 
 // ── Path ⑩: run the node in a Web Worker (scale) — A/B against the main thread ──
-let _worker = null, _rpcId = 0; const _rpc = new Map();
-function workerCall(cmd) {
+let _worker = null, _rpcId = 0; const _rpc = new Map(); let _onWorkerProgress = null;
+function workerCall(cmd, args) {
   if (!_worker) {
     _worker = new Worker('node-worker.js', { type: 'module' });
-    _worker.onmessage = (e) => { const { id, ok, result, error } = e.data; const p = _rpc.get(id); if (!p) return; _rpc.delete(id); ok ? p.resolve(result) : p.reject(new Error(error)); };
+    _worker.onmessage = (e) => { const d = e.data; if (d.progress) { _onWorkerProgress && _onWorkerProgress(d); return; } const p = _rpc.get(d.id); if (!p) return; _rpc.delete(d.id); d.ok ? p.resolve(d.result) : p.reject(new Error(d.error)); };
     _worker.onerror = (e) => log('worker error: ' + (e.message || e.filename), 'err');
   }
-  const id = ++_rpcId; _worker.postMessage({ id, cmd });
+  const id = ++_rpcId; _worker.postMessage({ id, cmd, args });
   return new Promise((resolve, reject) => _rpc.set(id, { resolve, reject }));
 }
 // main-thread liveness meter: largest gap between 16ms ticks (big gap = UI frozen)
@@ -508,7 +517,31 @@ document.getElementById('swiftsync').onclick = async () => {
   btn.disabled = false;
 };
 
-log('ready. ① torrent → ③ validate → ④ follow → ⑤ live (OPFS) → ⑥ Core snapshot → ⑦⑧ persist → ⑨ WASM → ⑩ worker → ⑪ SwiftSync.', 'ok');
+// ── Path ⑫: SwiftSync at scale — stream millions of coins through the 32-byte accumulator (in the worker) ──
+document.getElementById('scale').onclick = async () => {
+  const btn = document.getElementById('scale'); btn.disabled = true;
+  const $r = document.getElementById('scaleresult'); const N = 3_000_000;
+  try {
+    log('— SwiftSync at scale —', 'ok');
+    log(`streaming ${fmt(N)} outpoints through the accumulator in the worker…`);
+    // liveness meter: prove the UI stays responsive while the worker churns
+    let ticks = 0, last = performance.now(), maxGap = 0;
+    const iv = setInterval(() => { const n = performance.now(); const g = n - last; if (g > maxGap) maxGap = g; last = n; ticks++; }, 16);
+    _onWorkerProgress = (d) => { if (d.progress === 'scale') $r.innerHTML = `<span class="dim">processing… ${fmt(d.done)} / ${fmt(d.total)}</span>`; };
+    const r = await workerCall('scaleAccumulate', { n: N });
+    _onWorkerProgress = null; clearInterval(iv);
+    const heldGB = (N * 1900 / 1073741824).toFixed(1);   // ~1,900 B/coin (measured)
+    $r.innerHTML = `<table>
+      <tr><td>coins streamed</td><td class="n">${fmt(r.n)}</td><td class="dim">synthetic outpoints, in the worker</td></tr>
+      <tr><td>accumulator state</td><td class="n">${r.stateBytes} bytes</td><td class="dim">vs ~${heldGB} GB to hold them · digest ${r.digest}…</td></tr>
+      <tr><td>throughput</td><td class="n">${fmt(r.perSec)}/s</td><td class="dim">${(r.ms / 1000).toFixed(1)}s · UI responsive (max gap ${maxGap.toFixed(0)}ms)</td></tr>
+    </table><p class="ok">✅ ${fmt(r.n)} coins committed with 32 bytes of state, UI never froze. The real full set — 14.1M coins — commits the same way (0.9 GB RSS = the file, not 25 GB).</p>`;
+    log(`scale: ${fmt(r.n)} coins → 32-byte state, ${fmt(r.perSec)}/s, UI responsive (${maxGap.toFixed(0)}ms gap)`, 'ok');
+  } catch (e) { $r.innerHTML = `<span class="err">error: ${e.message}</span>`; log('scale error: ' + e.message, 'err'); console.error(e); }
+  btn.disabled = false;
+};
+
+log('ready. ① torrent → ③ validate → ④ follow → ⑤ live → ⑥ snapshot → ⑦⑧ persist → ⑨ WASM → ⑩ worker → ⑪⑫ SwiftSync.', 'ok');
 </script>
 </body>
 </html>

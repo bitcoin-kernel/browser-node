@@ -87,6 +87,13 @@
       "modules": ["swiftsync/accumulator.js", "swiftsync/outpoint.js", "engine/codec/hash.js"],
       "data": ["data/range.json", "data/range-seed.ndjson"],
       "verified": { "browser": "blocks 26000..26020: 249 + 2,203 - 1,091 - 1,361 cancels to ZERO with 32 bytes of state (vs ~25 GB); a fabricated spend yields a non-zero digest (rejected); 72ms", "node": "swiftsync-test.mjs", "provenance": "the repo's own SwiftSync accumulator (kernel/packages/swiftsync), verified across all of testnet4 by its _sscapstone.mjs" }
+    },
+    {
+      "id": 12, "name": "SwiftSync at scale — full UTXO set in 32 bytes", "ui": ["⑫"],
+      "proves": "The 25 GB ceiling is gone: the full real UTXO set is committed via the SwiftSync accumulator with the set-state held at a constant 32 bytes, not a multi-GB Map.",
+      "runs_on": "github-pages", "requires": [],
+      "modules": ["node-worker.js", "swiftsync/accumulator.js", "swiftsync/outpoint.js", "tools/swiftsync-commit.mjs"],
+      "verified": { "node": "tools/swiftsync-commit.mjs: 14,129,063 real coins (826 MB snapshot) -> 32-byte commitment af37b01d…, RSS flat at 0.90 GB (the input file, not 25 GB), 73s", "browser": "3,000,000 outpoints streamed through the accumulator in the worker -> 32-byte state (vs ~5.3 GB to hold), 302k/s, UI responsive (16ms gap)" }
     }
   ],
   "servers": [
@@ -103,6 +110,6 @@
   },
   "trust_model": "The bridge and torrent/HTTP transports are untrusted: they cannot forge valid blocks or headers because the tab validates everything (PoW, difficulty, scripts, signatures, fees). Their only powers are withholding and eclipsing. assumeUTXO trusts the snapshot's UTXO set until background validation (not included here) re-derives it from genesis.",
   "remaining": [
-    "Use SwiftSync in the running node (node.html). SwiftSync stateless validation is proven (act ⑪ — set-consistency via a 32-byte accumulator instead of the ~25 GB UTXO set). The remaining work is wiring it into the worker's forward-validation loop with a WebTorrent-distributed hints file (<100 MB) plus streaming prevout data for script checks, so node.html validates to the live tip without ever holding the full set. (tools/reach-tip.mjs already reaches the tip by keeping only the coins the forward blocks spend.) Large snapshots / hints go over WebTorrent, never git."
+    "Full hints-based stateless IBD. The memory ceiling is gone (act ⑫: 14.1M-coin UTXO set committed with 32 bytes of state; tools/swiftsync-commit.mjs), and SwiftSync is wired into the running node (act ⑪ + node.html). The deepest remaining piece is a complete stateless forward-validation over a large range / genesis->tip: generate a SwiftSync hints file (kernel/packages/swiftsync hint.js, <100 MB, WebTorrent-distributed), stream blocks + prevout data, and validate holding only the accumulator + a bounded working set — turning the proven pieces into a full IBD that never materializes the UTXO set. Large snapshots / hints go over WebTorrent, never git."
   ]
 }

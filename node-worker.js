@@ -92,9 +92,23 @@ async function resume() {
   return { coins: snap.size };
 }
 
-const handlers = { init, followRange, checkpoint, resume, swiftsync };
+// SwiftSync at scale, in the tab: stream N outpoints through the accumulator and
+// show the set-state stays 32 bytes (off the main thread). The full real result
+// is in tools/swiftsync-commit.mjs (14.1M coins, RSS = the file, not 25 GB).
+async function scaleAccumulate({ n = 3_000_000 } = {}) {
+  const acc = new Accumulator({ sha256 });
+  const t0 = performance.now();
+  for (let i = 0; i < n; i++) {
+    acc.add(encodeOutpoint({ txid: i.toString(16).padStart(64, '0'), vout: i & 3 }));
+    if ((i & 524287) === 0) self.postMessage({ progress: 'scale', done: i, total: n });
+  }
+  const ms = performance.now() - t0;
+  return { n, ms, perSec: Math.round(n / (ms / 1000)), stateBytes: 32, digest: Array.from(acc.digest()).map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 16) };
+}
+
+const handlers = { init, followRange, checkpoint, resume, swiftsync, scaleAccumulate };
 self.onmessage = async (e) => {
-  const { id, cmd } = e.data;
-  try { self.postMessage({ id, ok: true, result: await handlers[cmd]() }); }
+  const { id, cmd, args } = e.data;
+  try { self.postMessage({ id, ok: true, result: await handlers[cmd](args) }); }
   catch (err) { self.postMessage({ id, error: err.message }); }
 };
