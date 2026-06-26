@@ -60,10 +60,11 @@ This page <b>signs and broadcasts</b> — the signed transaction is announced to
 Signs the input at whichever <code>m/84'/1'/0'/{0,1}/i</code> address holds the UTXO — it searches your first 20 receiving
 and change addresses for the funding address and uses that key (P2WPKH, BIP143). Change returns to the funding address.
 The signature is produced by the bundled WASM secp and the finished transaction is checked by the node's own
-<code>ScriptInterpreter.verifyInput</code> before display — the same code path that validates blocks. Broadcast announces the
-tx to a real testnet4 peer over the bridge (<code>inv</code> → <code>getdata</code> → <code>tx</code>) and reads back whether
-it entered the mempool. Proven end-to-end in <code>test-sign.mjs</code> / <code>test-wallet.mjs</code> /
-<code>test-broadcast.mjs</code>. Next: pull UTXOs from the spv.html scan, multi-UTXO coin selection.</p>
+<code>ScriptInterpreter.verifyInput</code> before display — the same code path that validates blocks. Broadcast fans the
+tx out to several testnet4 peers over the bridge (<code>inv</code> → <code>getdata</code> → <code>tx</code>, the bridge dialing
+a random peer per connection) and stops once one admits it — so a single peer missing an unconfirmed parent can't sink it.
+Proven end-to-end in <code>test-sign.mjs</code> / <code>test-wallet.mjs</code> / <code>test-broadcast.mjs</code> /
+<code>test-broadcast-multi.mjs</code>. Next: pull UTXOs from the spv.html scan, multi-UTXO coin selection.</p>
 
 <script type="module">
 import { mnemonicToSeed, deriveSigningKey, signEcdsa, toDer } from './wasm-keygen.js';
@@ -72,7 +73,7 @@ import { ScriptEngine, addressToScript } from './engine/codec/script.js';
 import { ScriptInterpreter } from './engine/codec/interpreter.js';
 import { hash160, bytesToHex } from './engine/codec/hash.js';
 import { connect as liveConnect } from './live-feed.js';
-import { broadcastTx } from './broadcast.js';
+import { broadcastToPeers } from './broadcast.js';
 
 const $ = (id) => document.getElementById(id);
 const q = new URLSearchParams(location.search);
@@ -177,29 +178,32 @@ function buildAndSign() {
   }
 }
 
-// Broadcast over the bridge: connect to a real testnet4 peer, announce + send the
-// tx, and read back whether it entered the mempool. Same broadcast.js proven in
-// test-broadcast.mjs against a live node.
+// Broadcast over the bridge to SEVERAL peers (the bridge dials a random peer per
+// connection), succeeding as soon as one admits it — so a single peer that lacks
+// an unconfirmed parent can't sink the spend. Same broadcastToPeers proven in
+// test-broadcast-multi.mjs against the real peer list.
+const BROADCAST_PEERS = 3;
 async function broadcast() {
   if (!signedTx) return;
   $('bcast').disabled = true; $('bcastOut').innerHTML = '';
-  $('bcastStatus').innerHTML = '<span class="dim">connecting to a testnet4 peer over the bridge…</span>';
-  let session = null;
+  let n = 0;
   try {
-    session = await liveConnect({ signalUrl, room: bridgeRoom, schemas, vectors, log: (m) => { $('bcastStatus').innerHTML = `<span class="dim">${m}</span>`; } });
-    $('bcastStatus').innerHTML = '<span class="dim">handshake complete — announcing transaction…</span>';
-    const r = await broadcastTx(session.peer, signedTx, codec);
-    if (r.accepted === true)
-      $('bcastOut').innerHTML = `<div class="field"><div class="k ok">✓ accepted into the peer's mempool</div><div class="v">txid ${r.txid}<br>The peer requested the tx and served it back — it is now relaying across testnet4.</div></div>`;
-    else if (r.requested && r.accepted === false)
-      $('bcastOut').innerHTML = `<div class="field"><div class="k err">✗ peer requested it, then rejected it (${r.detail})</div><div class="v">The transaction reached the peer but was not admitted to the mempool — usually the input is already spent, unconfirmed, or unknown to this node. Fund the 0/0 address and try a fresh UTXO.</div></div>`;
+    const out = await broadcastToPeers(async (i) => {
+      n = i + 1;
+      $('bcastStatus').innerHTML = `<span class="dim">peer ${n}/${BROADCAST_PEERS}: connecting over the bridge…</span>`;
+      const session = await liveConnect({ signalUrl, room: bridgeRoom, schemas, vectors, log: (m) => { $('bcastStatus').innerHTML = `<span class="dim">peer ${n}/${BROADCAST_PEERS}: ${m}</span>`; } });
+      $('bcastStatus').innerHTML = `<span class="dim">peer ${n}/${BROADCAST_PEERS}: announcing transaction…</span>`;
+      return session.peer;
+    }, signedTx, codec, { peers: BROADCAST_PEERS, needAccepts: 1 });
+
+    if (out.accepted > 0)
+      $('bcastOut').innerHTML = `<div class="field"><div class="k ok">✓ accepted into the mempool (${out.accepted} of ${out.tried} peer(s))</div><div class="v">txid ${out.txid}<br>A peer admitted the transaction — it is now relaying across testnet4.</div></div>`;
     else
-      $('bcastOut').innerHTML = `<div class="field"><div class="k err">broadcast inconclusive</div><div class="v">${r.detail}</div></div>`;
-    $('bcastStatus').innerHTML = r.accepted === true ? '<span class="ok">✓ broadcast</span>' : '<span class="dim">done</span>';
+      $('bcastOut').innerHTML = `<div class="field"><div class="k err">✗ no peer admitted it (tried ${out.tried})</div><div class="v">${out.results.map((r, i) => `peer ${i + 1}: ${r.detail}`).join('<br>')}<br><br>Usually the input is still <b>unconfirmed</b> and these peers don't have its parent tx, or it's already spent. Wait for the funding tx to confirm, then broadcast again (the signed tx is unchanged).</div></div>`;
+    $('bcastStatus').innerHTML = out.accepted > 0 ? '<span class="ok">✓ broadcast</span>' : '<span class="dim">done</span>';
   } catch (e) {
     $('bcastStatus').innerHTML = `<span class="err">broadcast failed: ${e.message}</span>`;
   } finally {
-    try { session?.peer?.close(); } catch {}
     $('bcast').disabled = false;
   }
 }

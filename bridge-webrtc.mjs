@@ -29,20 +29,41 @@ function pipe(dc, pc, { peerHost, peerPort, log }) {
   dc.onClosed(close); dc.onError(() => close());
 }
 
-export function startBridge({ signalUrl, room, peerHost, peerPort, iceServers, log = () => {} } = {}) {
-  log(`webrtc bridge: signaling ${signalUrl} · room ${room} → tcp ${peerHost}:${peerPort}`);
+// peerHosts: an array of upstream testnet4 peers. Each browser data channel is
+// dialed to a RANDOM one, so N tab connections reach up to N different peers —
+// this is what lets the multi-peer broadcast actually fan out to the network.
+// (peerHost, singular, is still accepted for backward compatibility.)
+export function startBridge({ signalUrl, room, peerHost, peerHosts, peerPort, iceServers, log = () => {} } = {}) {
+  const hosts = (peerHosts && peerHosts.length) ? peerHosts : [peerHost];
+  log(`webrtc bridge: signaling ${signalUrl} · room ${room} → tcp ${hosts.length} peer(s) :${peerPort} ${hosts.length > 1 ? '(random per connection)' : '[' + hosts[0] + ']'}`);
   const sig = connectAsAnswerer({
     signalUrl, room, iceServers, log,
-    onChannel: (dc, { pc }) => { log('  peer connected via WebRTC — dialing testnet4 peer'); pipe(dc, pc, { peerHost, peerPort, log }); },
+    onChannel: (dc, { pc }) => {
+      const host = hosts[Math.floor(Math.random() * hosts.length)];
+      log(`  peer connected via WebRTC — dialing testnet4 peer ${host}`);
+      pipe(dc, pc, { peerHost: host, peerPort, log });
+    },
   });
   return { close: () => sig.close() };
+}
+
+// Resolve the upstream peer list: PEER_HOSTS (comma list) > data/peers-testnet4.json > PEER_HOST.
+async function resolveHosts() {
+  if (process.env.PEER_HOSTS) return process.env.PEER_HOSTS.split(',').map((s) => s.trim()).filter(Boolean);
+  if (process.env.PEER_HOST) return [process.env.PEER_HOST];
+  try {
+    const { readFile } = await import('node:fs/promises');
+    const list = JSON.parse(await readFile(new URL('./data/peers-testnet4.json', import.meta.url), 'utf8'));
+    if (Array.isArray(list.peers) && list.peers.length) return list.peers;
+  } catch { /* fall through to localhost */ }
+  return ['127.0.0.1'];
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   startBridge({
     signalUrl: process.env.SIGNAL_URL || 'ws://localhost:9000/.webrtc',
     room: process.env.ROOM || 'b17c0192abad1deacafe',
-    peerHost: process.env.PEER_HOST || '127.0.0.1',
+    peerHosts: await resolveHosts(),
     peerPort: Number(process.env.PEER_PORT || 48333),
     log: (m) => console.log(m),
   });

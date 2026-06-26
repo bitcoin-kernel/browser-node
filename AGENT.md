@@ -75,7 +75,7 @@ engine (used inside the worker). Pure-JS fallback exists.
 | `keys.html` | ✅ | **Generate or import a testnet4 wallet** — the one page with private keys. A 12-word **BIP39** mnemonic (generate, or import from any wallet) → private/hardened BIP32 (WASM secp `pointFromScalar`/`privateAdd`) → account **tpub** + receiving addresses. Throwaway/testnet; keys live only in-tab. |
 | `spv.html` | 🟡 | **Watch-only SPV wallet.** ① derive receiving addresses from an xpub/tpub (`Bip32`); ② **SPV merkle-proof** inclusion (`SpvEngine`, BIP37 proof built from a block); ③ **scan** the chain (full-block, over the bridge) for payments → UTXOs + balance. No private keys. |
 | `mempool.html` | 🟡 | **Watch the unconfirmed mempool for an address** — no explorer API. Connects to a peer over the bridge, listens to the tx relay flow (`inv`→`getdata`→`tx`), decodes each tx itself, and flags outputs paying the watched address → live unconfirmed UTXOs + inbound total. `?address=` prefills + auto-watches. Honest bound: watches the *flow*, can't enumerate the *pool* (no bloom/BIP157 on reachable peers), so it catches payments as they propagate while open. |
-| `wallet.html` | 🟡 | **Sign + broadcast a testnet4 spend.** Load a BIP39 mnemonic → `deriveSigningKey` for whichever address holds the UTXO (searches the first 20 receiving + change indices for the funding address, signs with that key) → build a P2WPKH spend (UTXO + destination + amount + fee, change back to `0/0`) → BIP143 sighash → WASM secp ECDSA sign → **verified against the node's own `ScriptInterpreter.verifyInput` before display** → raw hex + txid → **Broadcast** announces it to a real testnet4 peer over the bridge (`inv`→`getdata`→`tx`, then re-`getdata` reads mempool accept/reject). Keys live only in-tab. UTXO still hand-entered (next: pull from the spv.html scan). |
+| `wallet.html` | 🟡 | **Sign + broadcast a testnet4 spend.** Load a BIP39 mnemonic → `deriveSigningKey` for whichever address holds the UTXO (searches the first 20 receiving + change indices for the funding address, signs with that key) → build a P2WPKH spend (UTXO + destination + amount + fee, change back to `0/0`) → BIP143 sighash → WASM secp ECDSA sign → **verified against the node's own `ScriptInterpreter.verifyInput` before display** → raw hex + txid → **Broadcast** fans it out to several testnet4 peers over the bridge (`inv`→`getdata`→`tx`, then re-`getdata` reads mempool accept/reject; the bridge dials a random peer per connection), succeeding once one admits it. Keys live only in-tab. UTXO still hand-entered (next: pull from the spv.html scan). |
 
 **URL params (shared):** `?signal=wss://<pod>/.webrtc` (WebRTC signaling) · `?room=<hex>`
 (`[a-f0-9]{8,128}`) · `?bridge=ws://host:8334` (WS bridge) · `?replay=1` (node/fullnode: re-watch
@@ -96,8 +96,11 @@ the genesis→tip header climb) · mesh `?bridgeRoom=<hex>` (the seed's network 
 - **`live-feed.js`** — `connect({bridgeUrl | signalUrl, room, schemas, vectors, persist})` picks
   WsPeer vs RtcPeer; `syncToTip` (one-shot), `tail` (follow + reorgs).
 - **`broadcast.js`** — `broadcastTx(peer, tx, codec)`: announce a signed tx (`inv`), serve it on
-  `getdata`, then re-query to read mempool accept (`tx`) vs reject (`notfound`). Transport-agnostic
-  (any `send`/`waitFor` peer); used by wallet.html, proven in `test-broadcast.mjs`.
+  `getdata`, then re-query to read mempool accept (`tx`/already-known) vs reject (`notfound`).
+  `broadcastToPeers(connectOne, tx, codec, {peers, needAccepts})` fans out across several fresh
+  connections, succeeding once one admits it (so a peer lacking an unconfirmed parent can't sink the
+  spend). Transport-agnostic (any `send`/`waitFor`+`close` peer); used by wallet.html, proven in
+  `test-broadcast.mjs` / `test-broadcast-multi.mjs`.
 - **`node-worker.js`** — Web Worker validation core. RPC handlers: `init, followRange, checkpoint,
   resume, swiftsync, scaleAccumulate, swiftsyncHints, fullchain, verifySnapshot`.
 - **`validate-forward.js`** (`loadEngine`, `coinviewOf`), **`follow-chain.js`** (`applyBlock`,
@@ -123,7 +126,7 @@ UTXO commitment). It does **not** execute scripts.
 | File | Role |
 |---|---|
 | `bridge.mjs` | WS↔TCP relay (`ws://localhost:8334` → a testnet4 peer). |
-| `bridge-webrtc.mjs` | WebRTC↔TCP relay; joins a signaling room (keepalive + auto-reconnect). The deployable bridge. |
+| `bridge-webrtc.mjs` | WebRTC↔TCP relay; joins a signaling room (keepalive + auto-reconnect). The deployable bridge. `PEER_HOSTS` (comma list) or `data/peers-testnet4.json` → dials a **random peer per connection** (enables multi-peer broadcast); `PEER_HOST` still works for a single peer. |
 | `rtc-signaling.mjs` | Node WebRTC room handshake helpers (`connectAsOfferer` / `connectAsAnswerer`, node-datachannel). |
 | `signaling-stub.mjs` | Local signaling server, **wire-identical** to a JSS pod's room mode (dev without a pod). |
 | `serve.mjs` | Static file server (`http://localhost:8088`). |
@@ -152,6 +155,8 @@ broadcast), `test-mesh-multihop.mjs` (A→B→C line, multi-hop), `test-mesh-gos
 source→one→all via gossip), `test-cfilter-probe.mjs` (BIP157 service probe), `test-scan.mjs` (wallet
 scan finds a watched output over the network), `test-broadcast.mjs` (announce a signed tx to a real
 peer → it requests via `getdata` → send `tx` → re-`getdata` reads accept/reject; unfunded ⇒ `notfound`),
+`test-broadcast-multi.mjs` (fan a signed tx out to several real peers from `data/peers-testnet4.json` via
+`broadcastToPeers`, aggregating per-peer accept/reject — one bad peer can't sink the spend),
 `test-mempool.mjs` (live mempool watch: listen to the relay flow + getdata a known txid → decode → output-scan
 matches an unconfirmed payment to a watched address), `verify-tx.mjs <rawhex>` (verify a signed tx against the
 LIVE prevouts — fetch each parent from a peer, run BIP143 verifyInput; `BROADCAST=1` relays to the parent-holder;
@@ -207,13 +212,14 @@ vectors/peers, and a network-agnostic bridge target.
 **Wallet — built (keygen + watch-only + signing):** `keys.html` (BIP39 generate/import → tpub,
 `wasm-keygen.js`), `spv.html` (① derive · ② SPV merkle-proof via `SpvEngine` · ③ chain scan → balance,
 over the bridge), and `wallet.html` (load mnemonic → P2WPKH spend → BIP143 sighash → WASM ECDSA sign →
-verified by the node's own `verifyInput` → **broadcast** to a real peer over the bridge via `broadcast.js`;
+verified by the node's own `verifyInput` → **multi-peer broadcast** over the bridge via `broadcast.js`;
 the signing key's `0/0` == spv.html's watch-only `0/0`, so what you fund is what you spend). Naming:
 `keys.html` = keys, `spv.html` = watch-only, `wallet.html` = spending. Honest gaps: no compact-filter/bloom
 peer reachable (`test-cfilter-probe.mjs`: services `0xc09`), so scanning is full-block (cheap for a recent
 range) and SPV proofs are self-built; generating a mnemonic needs the bundled wordlist
-(`data/bip39-english.txt`); broadcast confirms mempool entry by re-querying (`inv`→`getdata`→`tx`→`getdata`),
-proven against a live node with an unfunded tx (`notfound`) — an accepted broadcast needs faucet funds.
+(`data/bip39-english.txt`); broadcast confirms mempool entry by re-querying (`inv`→`getdata`→`tx`→`getdata`)
+and fans out to several peers (`data/peers-testnet4.json`) so an unconfirmed-parent spend isn't sunk by one
+peer — a real index-aware spend (`8bff332f…`) went live on testnet4 this way; `verify-tx.mjs` confirmed it.
 **Next: close the loop** — pull spendable UTXOs from the spv.html scan into wallet.html (drop the
 hand-entered UTXO), then multi-UTXO coin selection, PSBT in `wallet.js`, Schnorr/P2TR via `signSchnorr`.
 `engine/codec/filters.js` (BIP158) and `nostr.js` remain unwired.

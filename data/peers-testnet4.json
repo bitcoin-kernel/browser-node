@@ -1,0 +1,15 @@
+{
+  "comment": "Reachable testnet4 peers (port 48333, NODE_WITNESS), discovered via getaddr + handshake probe. Used by bridge-webrtc.mjs (random per connection) and the multi-peer broadcast. Stale entries are fine — callers probe/skip dead ones.",
+  "port": 48333,
+  "peers": [
+    "103.165.192.202",
+    "103.165.192.201",
+    "54.78.49.45",
+    "178.105.188.192",
+    "221.132.18.44",
+    "103.99.171.211",
+    "69.197.140.227",
+    "178.105.177.3",
+    "185.18.221.19"
+  ]
+}
