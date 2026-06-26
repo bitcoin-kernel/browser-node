@@ -48,7 +48,7 @@ which <b>validates every one</b> (proof-of-work + merkle root). That's block pro
 PoC scope: <b>Seed 5000</b> pulls real blocks from the network (via the bridge) and relays them to the peer, each validated for
 structure + proof-of-work (no UTXO set, so not full-consensus). Next: relay across more than two peers, and stream the full chain.
 Default room <code>c0ffeebabe123456</code>; override with
-<code>?room=&lt;hex&gt;</code> and the signaling server with <code>?signal=wss://your.pod/.webrtc</code>.</p>
+<code>?room=&lt;hex&gt;</code>, the signaling server with <code>?signal=wss://your.pod/.webrtc</code>, and the block count with <code>?blocks=N</code> (default 5000).</p>
 
 <script type="module">
 import { Codec } from './engine/codec/codec.js';
@@ -67,6 +67,7 @@ const toHex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join(
 const q = new URLSearchParams(location.search);
 const signalUrl = q.get('signal') || 'wss://melvincarvalho.com/.webrtc';
 const room = q.get('room') || 'c0ffeebabe123456';   // mesh's own room (distinct from the bridge's room)
+const seedCount = Math.max(1, parseInt(q.get('blocks'), 10) || 5000);   // ?blocks=N (default 5000)
 
 let codec, p2p, be, peer = null, genesisHash = null;
 const have = new Map();      // blockHash -> hex (blocks we can serve)
@@ -184,7 +185,8 @@ $('connect').onclick = async () => {
   }
 };
 
-$('seed').onclick = () => seedBlocks(5000);
+$('seed').textContent = `🌱 Seed ${fmt(seedCount)} blocks from the network → peer`;
+$('seed').onclick = () => seedBlocks(seedCount);
 
 log(`idle — press ▶ Connect, then open this page in a second tab. Room ${room.slice(0,10)}… via ${signalUrl}.`, 'dim');
 </script>

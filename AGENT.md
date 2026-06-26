@@ -74,7 +74,8 @@ engine (used inside the worker). Pure-JS fallback exists.
 
 **URL params (shared):** `?signal=wss://<pod>/.webrtc` (WebRTC signaling) · `?room=<hex>`
 (`[a-f0-9]{8,128}`) · `?bridge=ws://host:8334` (WS bridge) · `?replay=1` (node/fullnode: re-watch
-the genesis→tip header climb) · mesh `?bridgeRoom=<hex>` (the seed's network source room).
+the genesis→tip header climb) · mesh `?bridgeRoom=<hex>` (the seed's network source room) · mesh
+`?blocks=N` (seed count, default 5000).
 
 ---
 
