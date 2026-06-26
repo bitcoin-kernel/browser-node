@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How to fit a Bitcoin full node in a browser tab — bitcoin-kernel/browser-node</title>
+<meta name="description" content="Validating Bitcoin from genesis, in a browser tab, with 32 bytes of state. How browser-node works.">
+<style>
+  :root { --bg:#fff; --fg:#16181d; --mut:#5b6470; --bd:#e6e8eb; --pan:#fafbfc; --ac:#e8830c; --ac2:#0969da; --good:#1a7f37; --bad:#cf222e;
+          --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; color-scheme:light; }
+  * { box-sizing:border-box; }
+  body { background:var(--bg); color:var(--fg); font:17px/1.7 var(--sans); max-width:720px; margin:0 auto; padding:40px 20px 80px; -webkit-font-smoothing:antialiased; }
+  a { color:var(--ac2); text-decoration:none; } a:hover { text-decoration:underline; }
+  h1 { font-size:30px; line-height:1.2; letter-spacing:-.02em; margin:0 0 8px; }
+  h2 { font-size:21px; letter-spacing:-.01em; margin:42px 0 8px; }
+  .dek { font-size:18px; color:var(--mut); margin:0 0 6px; }
+  .meta { color:var(--mut); font-size:14px; font-family:var(--mono); border-bottom:1px solid var(--bd); padding-bottom:24px; margin-bottom:8px; }
+  code { font-family:var(--mono); font-size:.88em; background:var(--pan); border:1px solid var(--bd); border-radius:4px; padding:1px 5px; }
+  .big { font-family:var(--mono); border-left:3px solid var(--ac); background:var(--pan); padding:12px 16px; margin:22px 0; border-radius:0 6px 6px 0; }
+  .big b { color:var(--ac); }
+  blockquote { margin:22px 0; padding-left:18px; border-left:3px solid var(--bd); color:var(--fg); font-size:19px; }
+  .acts { font-family:var(--mono); font-size:13.5px; background:var(--pan); border:1px solid var(--bd); border-radius:8px; padding:14px 16px; line-height:1.9; }
+  .foot { margin-top:48px; border-top:1px solid var(--bd); padding-top:18px; color:var(--mut); font-size:14px; }
+  hr { border:0; border-top:1px solid var(--bd); margin:34px 0; }
+  em { color:var(--fg); }
+</style>
+</head>
+<body>
+
+<p class="dek">bitcoin-kernel / browser-node</p>
+<h1>How to fit a Bitcoin full node in a browser tab</h1>
+<p class="dek">Validating the chain from genesis — proof-of-work, signatures, no double-spends — in a tab, with 32 bytes of state.</p>
+<p class="meta">testnet4 · a build log · <a href="index.html">the demo →</a></p>
+
+<p>Open a browser tab and validate Bitcoin in it. Not query an explorer, not trust a server — actually check
+the proof-of-work, verify the signatures, enforce the no-double-spend rule, from the genesis block forward.</p>
+
+<p>Four people will tell you this is impossible, and all four are right:</p>
+
+<ul>
+<li><b>The chain is gigabytes.</b> Even testnet4 is ~12 GB of blocks.</li>
+<li><b>The UTXO set is gigabytes.</b> To check that an input spends a real, unspent coin, a normal node holds the
+entire set of unspent outputs in memory. On testnet4 that's <b>14 million coins</b>.</li>
+<li><b>A browser can't open a TCP socket.</b> Bitcoin's peer-to-peer protocol is raw TCP on port 8333. A tab can
+do WebSocket, WebRTC, and HTTP — and nothing else.</li>
+<li><b>JavaScript is too slow.</b> Verifying a single ECDSA signature in pure JS is glacial; a real block can have
+thousands.</li>
+</ul>
+
+<p>This is the story of beating each one — and of the small, beautiful piece of arithmetic that beats the
+hardest of them.</p>
+
+<h2>It starts with a torrent</h2>
+
+<p>The spark was an ordinary question: <em>can we sync testnet4 fast?</em> Modern Bitcoin Core can, using
+<b>assumeUTXO</b> — you load a snapshot of the UTXO set at some height, get a usable node in minutes, and validate
+the history underneath in the background. The snapshot is just a file. Files can be torrented. So the first
+experiment was mundane: download a Core UTXO snapshot over BitTorrent, <code>loadtxoutset</code>, done in a few
+minutes instead of hours.</p>
+
+<p>Then the actual idea: <em>WebTorrent runs in a browser.</em> A tab can pull that snapshot peer-to-peer over
+WebRTC, no server in the middle. And there's a pure-JavaScript implementation of Bitcoin's consensus rules — the
+<a href="https://github.com/bitcoin-kernel/node">bitcoin-kernel</a> engine — that runs anywhere JS does. Put those
+together and the absurd premise has a shape: <em>bootstrap a node from a torrented snapshot, in a tab.</em></p>
+
+<h2>Building the node, one "but how do you…" at a time</h2>
+
+<p>Each capability is a small answer to an obvious objection.</p>
+
+<p><b>But how do you hold the coins?</b> A single JavaScript <code>Map</code> throws a tantrum past ~16.7 million
+entries, so the coin view is <em>sharded</em> across 64 maps. Lookups land in under 40 nanoseconds — fast enough
+that the UTXO set is never the bottleneck during validation.</p>
+
+<p><b>But how do you actually validate a block?</b> You hand the engine the block plus a coin view and it runs the
+real rules — prevout resolution, fees, coinbase maturity, the witness commitment, and the scripts: every
+signature, checked. To prove it isn't rubber-stamping, flip a single satoshi in one coin's value and the BIP143
+signature it commits to fails. The block is rejected. That's the whole game: a forgery has nowhere to hide.</p>
+
+<p><b>But how do you follow the chain?</b> You apply each block to the coin view — remove the coins it spends, add
+the ones it creates — so the next block can spend them. Run it over a stretch of real blocks and watch the UTXO
+set evolve, every signature verified along the way.</p>
+
+<p><b>But a tab can't open TCP.</b> Right. So a ~40-line <em>bridge</em> relays the raw Bitcoin p2p protocol
+between a WebSocket (which the tab speaks) and a real peer (which speaks TCP). The tab does the version handshake,
+asks for headers, and validates the entire header chain itself — proof-of-work, the testnet4 difficulty rules,
+linkage, reorgs. The bridge is pure plumbing: it can withhold data, but it <em>cannot forge a valid header</em>,
+because the tab does the checking. With it, the tab reached the live tip — and caught blocks that were mined
+<em>while it was running</em>.</p>
+
+<p><b>But the snapshot is in Bitcoin Core's format.</b> So you write a parser for it — Core's <code>dumptxoutset</code>
+v2 layout, with its compressed amounts and script encodings. The proof that the parser is correct is delicious:
+feed a real block's real signatures against coins decoded from the file, and they verify. A segwit signature
+commits to the amount and the script, so if a single byte of the decompression were wrong, the signatures would
+fail. They pass. The torrented Core snapshot is now a working coin view in the tab.</p>
+
+<p><b>But it forgets everything on reload.</b> So it persists to <b>OPFS</b>, the browser's origin-private file
+system. The header chain is checkpointed to disk; a reload <em>resumes from disk in under two seconds</em> instead
+of re-syncing 140,000 headers from genesis.</p>
+
+<p><b>But JavaScript is slow at crypto.</b> So you drop in a <b>WebAssembly</b> build of libsecp256k1 — but only
+behind a gate: it must agree with the pure-JS verifier on every test vector before it's trusted. It does, and it's
+several times faster.</p>
+
+<p><b>But heavy validation freezes the tab.</b> So the whole engine — validation, the coin view, the WASM crypto,
+the disk I/O — moves into a <b>Web Worker</b>. The same work that locks the UI for a full second on the main
+thread runs in the worker with the page staying perfectly responsive.</p>
+
+<p>Piece by piece, the tab became a node: bootstrap, validate, follow, sync live, persist, accelerate. And then it
+hit a wall that no amount of engineering gets through.</p>
+
+<h2>The 25-gigabyte wall</h2>
+
+<p>To validate the chain forward to the present, you need the present UTXO set. So: load the real one, all 14
+million coins, and measure honestly what it costs in memory.</p>
+
+<div class="big">14,129,063 coins, held as a coin view: ~<b>1,900 bytes each</b> → about <b>25 GB</b> of RAM.</div>
+
+<p>It didn't even fit in Node with a 24 GB heap — it crashed. A browser tab gets a few gigabytes at most. There is
+no clever encoding that turns 25 GB into something a tab can hold; you can shave it, but not by an order of
+magnitude. Holding the full UTXO set in a tab is simply not on the menu.</p>
+
+<p>This is the honest moment in the project. Everything up to here was engineering. This was a wall.</p>
+
+<h2>The punchline: 32 bytes</h2>
+
+<p>Here is the idea that walks through the wall, and it's the kind of thing that makes you grin. It comes from a
+2025 proposal called <a href="https://gist.github.com/RubenSomsen/a61a37d14182ccd78760e477c78133cd">SwiftSync</a>,
+and it rests on a single line of arithmetic:</p>
+
+<blockquote>every output ever created &minus; every input ever spent = the UTXO set</blockquote>
+
+<p>Read it again, because it's the whole trick. Every coin that gets created is eventually spent — <em>except</em>
+the ones that make up the current UTXO set. So if you take the set of all outputs and subtract the set of all
+inputs, everything that was created-then-spent cancels, and what survives is exactly the unspent coins.</p>
+
+<p>Now do that subtraction with a <em>hash</em> instead of a giant table. Keep one running number. As you stream
+the chain block by block, <b>add</b> a hash of every output created and <b>subtract</b> a hash of every input
+spent. A coin that's created and later spent is added once and subtracted once — it vanishes. What's left at the
+end is a fingerprint of precisely the coins still unspent: the UTXO set, distilled to a constant
+<b>32 bytes</b>.</p>
+
+<div class="big">We streamed the full testnet4 UTXO set — all <b>14,129,063 coins</b> — through this accumulator.
+Memory stayed flat at the size of the input, never the set. The set-state never left <b>32 bytes</b>.
+What was 25 GB is now a number you could write on a napkin.</div>
+
+<p>And it's not a trust shortcut. If a single block tried to spend a coin that never existed, or spend one twice,
+the sums wouldn't cancel — the final number wouldn't match the known commitment, and validation fails. The hints
+that make it fast (a tiny file marking which outputs survive — about <b>25 bytes per block</b>, a few megabytes
+for the whole chain) carry no authority either: wrong hints just make the check fail. They can't make a bad chain
+look good.</p>
+
+<p>So the demo does the thing the wall said was impossible. It streams blocks <em>from the genesis block forward</em>,
+in the tab, in a worker, feeding each output and input into the accumulator — and verifies the result against an
+independently computed commitment. The whole early chain checks out holding nothing but those 32 bytes. The rest of
+the chain is the same loop; it's just more data to stream (and most of that data is inscription witness bytes the
+accumulator doesn't even need).</p>
+
+<h2>What it is, and what it isn't</h2>
+
+<p>Be honest about the edges. The live feed needs that little bridge — a tab will never speak raw TCP, and that
+bridge can eclipse you even though it can't forge anything. assumeUTXO trusts a snapshot until the history beneath
+it is checked. And the full genesis-to-tip stream is bound by bandwidth, not by cleverness — it's the one lap left
+to run end to end in a tab.</p>
+
+<p>But every load-bearing piece is built, measured, and live: real consensus validation, a real Core snapshot
+parsed and validated against, a live peer feed, persistence, WASM crypto, a worker for scale, and — the one that
+matters most — validation that doesn't need the 25 GB set at all. Thirteen small demonstrations, one running-node
+dashboard, and a from-genesis run, in a 3.8 MB repository where the largest file is the libsecp256k1 binary.</p>
+
+<div class="acts">
+① bootstrap from a torrented snapshot · ③ validate a block forward · ④ follow the chain ·
+⑤ live header feed over the bridge · ⑥ parse Core's <code>dumptxoutset</code> · ⑦⑧ persist to OPFS ·
+⑨ WASM secp256k1 · ⑩ run it in a Worker · ⑪ SwiftSync, stateless · ⑫ the full set in 32 bytes ·
+⑬ hints → reconstruct → verify
+</div>
+
+<p>The point was never a product. It was to find out whether a Bitcoin full node in a browser tab is a contradiction
+in terms — and to answer it honestly, with running code and real numbers. It isn't a contradiction. The hardest
+wall came down to a subtraction.</p>
+
+<div class="foot">
+Try it: <a href="index.html">the acts, explained</a> · <a href="node.html">the running node</a> ·
+<a href="fullchain.html">validate from genesis</a> · <a href="https://github.com/bitcoin-kernel/browser-node">source</a><br>
+Built on <a href="https://github.com/bitcoin-kernel/node">bitcoin-kernel/node</a> and the
+<code>@bitcoin-desktop/schema</code> consensus engine. AGPL-3.0.
+</div>
+
+</body>
+</html>
