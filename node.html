@@ -26,7 +26,8 @@
 <h1>bitcoin-kernel / browser-node — running node <span class="dim">(testnet4)</span></h1>
 <p class="dim">The capstone: one continuous pipeline. Headers stream from a real peer over the bridge; the UTXO set is
 bootstrapped from a snapshot; blocks are validated forward and applied — the engine, WASM secp, UTXO set and OPFS
-persistence all run in a <b>Web Worker</b>. <a href="index.html">← the eleven acts, explained</a></p>
+persistence all run in a <b>Web Worker</b>, and set-consistency is checked with a <b>SwiftSync 32-byte accumulator</b>
+(not the full UTXO set). <a href="index.html">← the eleven acts, explained</a></p>
 
 <p><button id="start">▶ Start node</button> <span id="status" class="dim">idle</span></p>
 
@@ -37,6 +38,7 @@ persistence all run in a <b>Web Worker</b>. <a href="index.html">← the eleven 
   <div class="card"><div class="k">UTXO set</div><div class="v" id="utxo">—</div><div class="s">RAM, checkpointed to OPFS</div></div>
   <div class="card"><div class="k">blocks validated</div><div class="v" id="nblocks">0</div><div class="s" id="bps"></div></div>
   <div class="card"><div class="k">persistence</div><div class="v" id="ckpt">—</div><div class="s">OPFS sync access handle</div></div>
+  <div class="card"><div class="k">set consistency</div><div class="v" id="swift">—</div><div class="s" id="swiftsub">SwiftSync · 32-byte accumulator</div></div>
 </div>
 <div id="log"></div>
 
@@ -44,9 +46,11 @@ persistence all run in a <b>Web Worker</b>. <a href="index.html">← the eleven 
 Honest scope: this runs the node's real loop over a bounded range of real testnet4 blocks. Reaching the live tip
 with the <b>full</b> UTXO set hits a memory wall — the whole 14.1M-coin set is ~25 GB, over a tab's limit.
 <a href="index.html#">SwiftSync (act ⑪)</a> removes it: validate set-consistency with a <b>32-byte accumulator</b> instead of
-the set. Wiring SwiftSync into this worker loop (with a WebTorrent hints file) is the next step;
-<code>tools/reach-tip.mjs</code> already reaches the live tip today by keeping only the coins the forward blocks
-spend. Header sync needs the local bridge (<code>node bridge.mjs</code> + a testnet4 node); without it the
+the set — <b>now wired into this loop</b> (the "set consistency" card above). What remains is applying it at
+<i>scale</i>: a large range / full IBD with a WebTorrent hints file + streamed prevout data for scripts, so the node
+validates to the live tip holding nothing but the accumulator. <code>tools/reach-tip.mjs</code> already reaches the
+live tip today by keeping only the coins the forward blocks spend. Header sync needs the local bridge
+(<code>node bridge.mjs</code> + a testnet4 node); without it the
 validation pipeline still runs.</p>
 
 <script type="module">
@@ -118,6 +122,12 @@ $('start').onclick = async () => {
     const ck = await wcall('checkpoint');
     $('ckpt').textContent = (ck.bytes/1048576).toFixed(2) + ' MB';
     log(`UTXO set checkpointed to OPFS (${(ck.bytes/1048576).toFixed(2)} MB, sync access handle)`, 'ok');
+
+    // SwiftSync set-consistency check in the worker — 32-byte state, no UTXO set
+    const ss = await wcall('swiftsync');
+    $('swift').innerHTML = ss.zero ? '<span class="ok">✓ reconciled</span>' : '<span class="err">✗ non-zero</span>';
+    $('swiftsub').textContent = `SwiftSync · ${ss.stateBytes} bytes · ${fmt(ss.created)}+ ${fmt(ss.spent)}− · ${ss.ms.toFixed(0)}ms`;
+    log(`SwiftSync set-consistency: ${ss.zero ? 'reconciles to ZERO' : 'NON-ZERO'} with ${ss.stateBytes} bytes — no UTXO set held for double-spend checks (the path past the 25 GB ceiling at scale)`, ss.zero ? 'ok' : 'err');
 
     setStatus(`● running — fully validated to #${fmt(r.end)}; watching the tip`, 'ok');
     log('node running. Headers live from the network; UTXO bootstrapped + validated forward in the worker.', 'ok');

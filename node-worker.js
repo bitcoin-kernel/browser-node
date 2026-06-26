@@ -7,6 +7,9 @@ import { loadEngine, coinviewOf } from './validate-forward.js';
 import { ShardedUtxo } from './sharded-utxo-browser.js';
 import { followChain } from './follow-chain.js';
 import { setVerifyBackend } from './engine/codec/secp256k1.js';
+import { sha256 } from './engine/codec/hash.js';
+import { Accumulator } from './swiftsync/accumulator.js';
+import { encodeOutpoint } from './swiftsync/outpoint.js';
 
 let codec, be;
 let snap = null;             // the worker's RAM-resident coin view
@@ -33,6 +36,31 @@ async function followRange() {
   const r = await followChain({ range, codec, be, snap, coinview: coinviewOf(snap),
     onBlock: (b) => self.postMessage({ progress: 'block', height: b.height, ok: b.ok, txs: b.txs, inputs: b.inputs, utxoSize: b.utxoSize, ms: b.ms }) });
   return { validated: r.validated, total: r.total, utxoStart: start, utxoEnd: snap.size, start: range.start, end: range.end, ms: performance.now() - t0 };
+}
+
+// SwiftSync set-consistency over the same range: a constant 32-byte accumulator
+// (add created outputs, subtract spent inputs) replaces holding the UTXO set for
+// double-spend / fabrication checks. Closed against the start (seed) + terminal
+// (survivors) snapshots, a valid range cancels to zero.
+async function swiftsync() {
+  const NULL = '00'.repeat(32);
+  const acc = new Accumulator({ sha256 });
+  const seed = await (await fetch('data/range-seed.ndjson')).text();
+  let first = true, seedN = 0;
+  for (const l of seed.split('\n')) { if (!l) continue; if (first) { first = false; continue; } const [k] = JSON.parse(l); const i = k.lastIndexOf(':'); acc.add(encodeOutpoint({ txid: k.slice(0, i), vout: +k.slice(i + 1) })); seedN++; }
+  const range = await (await fetch('data/range.json')).json();
+  const survivors = new Set();
+  let created = 0, spent = 0; const t0 = performance.now();
+  for (const hex of range.blocks) {
+    const block = codec.decode('Block', hex);
+    for (const tx of block.transactions) {
+      const txid = codec.txid(tx);
+      for (const inp of tx.inputs) { if (inp.prevout.txid === NULL) continue; acc.spend(encodeOutpoint({ txid: inp.prevout.txid, vout: inp.prevout.vout })); spent++; survivors.delete(`${inp.prevout.txid}:${inp.prevout.vout}`); }
+      for (let v = 0; v < tx.outputs.length; v++) { const s = tx.outputs[v].scriptPubKey; if (typeof s === 'string' && s.startsWith('6a')) continue; acc.add(encodeOutpoint({ txid, vout: v })); created++; survivors.add(`${txid}:${v}`); }
+    }
+  }
+  for (const k of survivors) { const i = k.lastIndexOf(':'); acc.spend(encodeOutpoint({ txid: k.slice(0, i), vout: +k.slice(i + 1) })); }
+  return { zero: acc.isZero(), seedN, created, spent, terminal: survivors.size, stateBytes: 32, ms: performance.now() - t0 };
 }
 
 // Checkpoint the coin view via an OPFS *synchronous access handle* (Worker-only).
@@ -64,7 +92,7 @@ async function resume() {
   return { coins: snap.size };
 }
 
-const handlers = { init, followRange, checkpoint, resume };
+const handlers = { init, followRange, checkpoint, resume, swiftsync };
 self.onmessage = async (e) => {
   const { id, cmd } = e.data;
   try { self.postMessage({ id, ok: true, result: await handlers[cmd]() }); }
