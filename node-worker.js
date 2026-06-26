@@ -36,9 +36,10 @@ async function followRange() {
   for (const l of seed.split('\n')) { if (!l) continue; if (first) { first = false; continue; } const [k, v] = JSON.parse(l); snap.set(k, v); }
   const start = snap.size;
   const range = await (await fetch('data/range.json')).json();
+  const total = range.blocks.length;
   const t0 = performance.now();
   const r = await followChain({ range, codec, be, snap, coinview: coinviewOf(snap),
-    onBlock: (b) => self.postMessage({ progress: 'block', height: b.height, ok: b.ok, txs: b.txs, inputs: b.inputs, utxoSize: b.utxoSize, ms: b.ms }) });
+    onBlock: (b) => self.postMessage({ progress: 'block', height: b.height, ok: b.ok, txs: b.txs, inputs: b.inputs, utxoSize: b.utxoSize, ms: b.ms, total }) });
   return { validated: r.validated, total: r.total, utxoStart: start, utxoEnd: snap.size, start: range.start, end: range.end, ms: performance.now() - t0 };
 }
 

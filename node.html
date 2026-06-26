@@ -20,6 +20,9 @@
   .ok{color:var(--good)} .warn{color:var(--ac)} .err{color:var(--bad)} .dim{color:var(--mut)}
   .dot{ display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--mut); margin-right:6px; vertical-align:middle; }
   .dot.live{ background:var(--good); }
+  .cbar{ height:4px; background:var(--bd); border-radius:3px; overflow:hidden; margin-top:7px; }
+  .cbar>i{ display:block; height:100%; width:0; background:var(--ac); transition:width .12s linear; }
+  .cbar.done>i{ background:var(--good); }
 </style>
 </head>
 <body>
@@ -33,8 +36,8 @@ persistence all run in a <b>Web Worker</b>, and set-consistency is checked with 
 
 <div class="grid">
   <div class="card"><div class="k">network</div><div class="v">testnet4</div><div class="s" id="engine">engine: idle</div></div>
-  <div class="card"><div class="k"><span class="dot" id="hdot"></span>header tip (live)</div><div class="v" id="htip">—</div><div class="s" id="hsub">via WS↔TCP bridge</div></div>
-  <div class="card"><div class="k">validated height</div><div class="v" id="vheight">—</div><div class="s" id="vsub">full consensus, in worker</div></div>
+  <div class="card"><div class="k"><span class="dot" id="hdot"></span>header tip (live)</div><div class="v" id="htip">—</div><div class="s" id="hsub">via WS↔TCP bridge</div><div class="cbar" id="hbarw"><i id="hbar"></i></div></div>
+  <div class="card"><div class="k">validated height</div><div class="v" id="vheight">—</div><div class="s" id="vsub">full consensus, in worker</div><div class="cbar" id="vbarw"><i id="vbar"></i></div></div>
   <div class="card"><div class="k">UTXO set</div><div class="v" id="utxo">—</div><div class="s">RAM, checkpointed to OPFS</div></div>
   <div class="card"><div class="k">blocks validated</div><div class="v" id="nblocks">0</div><div class="s" id="bps"></div></div>
   <div class="card"><div class="k">persistence</div><div class="v" id="ckpt">—</div><div class="s">OPFS sync access handle</div></div>
@@ -52,7 +55,8 @@ validates to the live tip holding nothing but the accumulator. <code>tools/reach
 live tip today by keeping only the coins the forward blocks spend. Header sync needs a bridge to a testnet4 peer:
 either the local WS bridge (<code>node bridge.mjs</code>, default) or, for a click-and-run demo from anywhere, a
 WebRTC bridge signaled by a server — pass <code>?signal=wss://your.pod/.webrtc&amp;room=&lt;hex&gt;</code>
-(<code>node bridge-webrtc.mjs</code> on the other end). Without any bridge, the validation pipeline still runs.</p>
+(<code>node bridge-webrtc.mjs</code> on the other end). Without any bridge, the validation pipeline still runs.
+Add <code>?replay=1</code> to re-watch the full genesis→tip header climb (it otherwise resumes instantly from OPFS).</p>
 
 <script type="module">
 import { connect as liveConnect, syncToTip } from './live-feed.js';
@@ -82,18 +86,31 @@ function wcall(cmd) {
 async function runHeaderFeed() {
   const q = new URLSearchParams(location.search);
   const signalUrl = q.get('signal'), room = q.get('room'), bridgeUrl = q.get('bridge') || 'ws://localhost:8334';
-  const webrtc = !!signalUrl;
+  const webrtc = !!signalUrl, replay = q.get('replay') === '1';   // ?replay=1 → re-watch the full genesis→tip climb (skip OPFS resume)
   $('hsub').textContent = webrtc ? 'via WebRTC' : 'via WS↔TCP bridge';
+  $('hbar').style.width = '0'; $('hbarw').classList.remove('done');
   try {
     const jl = (n) => fetch(`./engine/schema/${n}.jsonld`).then(r => r.json());
     const [core, proof, p2p, chain, validate] = await Promise.all(['core','proof','p2p','chain','validate'].map(jl));
     const vectors = await (await fetch('./data/testnet4.json')).json();
-    log(`connecting header feed (${webrtc ? 'WebRTC signaling ' + signalUrl : 'WS bridge ' + bridgeUrl})…`);
-    const session = await liveConnect({ bridgeUrl, signalUrl, room, schemas: { core, proof, p2p, chain, validate }, vectors, log, persist: true });
-    if (session.resumedFrom) $('htip').textContent = '#' + fmt(session.resumedFrom);
-    await syncToTip(session, { onBatch: ({ tip }) => { $('htip').textContent = '#' + fmt(tip.height); } });
+    log(`connecting header feed (${webrtc ? 'WebRTC signaling ' + signalUrl : 'WS bridge ' + bridgeUrl})${replay ? ' — replay from genesis' : ''}…`);
+    const session = await liveConnect({ bridgeUrl, signalUrl, room, schemas: { core, proof, p2p, chain, validate }, vectors, log, persist: !replay });
+    const from = session.resumedFrom || 0;
+    if (from) $('htip').textContent = '#' + fmt(from);
+    // Climb: every header is validated (PoW, BIP94 retarget, linkage). Show the
+    // count rising, the rate, and a bar toward the peer's advertised tip.
+    const target = session.peer?.peerVersion?.startHeight || 0;
+    const hs = performance.now();
+    await syncToTip(session, { onBatch: ({ tip }) => {
+      $('htip').textContent = '#' + fmt(tip.height);
+      if (target > from) $('hbar').style.width = Math.min(100, 100 * tip.height / target).toFixed(1) + '%';
+      const rate = Math.round((tip.height - from) / ((performance.now() - hs) / 1000));
+      $('hsub').textContent = `${webrtc ? 'WebRTC' : 'bridge'} · validating… ${isFinite(rate) && rate > 0 ? fmt(rate) + ' hdr/s' : ''}`;
+    } });
     const tip = session.store.tip();
-    $('hdot').classList.add('live'); $('htip').textContent = '#' + fmt(tip.height); $('hsub').textContent = (webrtc ? 'WebRTC' : 'bridge') + ': synced + validated, live';
+    $('hdot').classList.add('live'); $('htip').textContent = '#' + fmt(tip.height);
+    $('hbar').style.width = '100%'; $('hbarw').classList.add('done');
+    $('hsub').textContent = (webrtc ? 'WebRTC' : 'bridge') + ': synced + validated, live';
     log(`header tip: #${fmt(tip.height)} (validated from genesis)`, 'ok');
   } catch (e) {
     $('htip').textContent = 'offline';
@@ -116,16 +133,28 @@ $('start').onclick = async () => {
     runHeaderFeed();   // parallel, non-blocking
 
     setStatus('bootstrapping UTXO + validating forward…', 'warn');
-    let n = 0; const t0 = performance.now();
-    _onProgress = (b) => {
+    // The worker validates the range fast (~ms/block); buffer the real per-block
+    // results and reveal them at a watchable cadence so you can watch the chain
+    // advance block by block — every number shown is a real validated block.
+    $('vbarw').classList.remove('done'); $('vbar').style.width = '0';
+    const queue = []; let total = 0, n = 0; const t0 = performance.now();
+    _onProgress = (b) => { if (b.progress !== 'block') return; total = b.total || total; queue.push(b); };
+    const render = (b) => {
       n++;
       $('vheight').textContent = '#' + fmt(b.height);
       $('utxo').textContent = fmt(b.utxoSize) + ' coins';
       $('nblocks').textContent = fmt(n);
       $('bps').textContent = (n / ((performance.now() - t0) / 1000)).toFixed(0) + ' blocks/s';
+      if (total) $('vbar').style.width = (100 * n / total).toFixed(1) + '%';
+      setStatus(`validating forward — block #${fmt(b.height)}${total ? ` (${n}/${total})` : ''}…`, 'warn');
     };
-    const r = await wcall('followRange');
+    let done = false;
+    const followP = wcall('followRange');
+    followP.then(() => { done = true; }, () => { done = true; });   // resolve drain even if validation errors
+    await new Promise((resolve) => { const iv = setInterval(() => { if (queue.length) render(queue.shift()); else if (done) { clearInterval(iv); resolve(); } }, 120); });
+    const r = await followP;
     _onProgress = null;
+    $('vbar').style.width = '100%'; $('vbarw').classList.add('done');
     $('vheight').textContent = '#' + fmt(r.end);
     log(`validated forward #${fmt(r.start)}→#${fmt(r.end)}: ${fmt(r.validated)}/${fmt(r.total)} blocks, UTXO ${fmt(r.utxoStart)}→${fmt(r.utxoEnd)} in ${r.ms.toFixed(0)}ms (worker, WASM secp)`, 'ok');
 
