@@ -46,7 +46,8 @@ other peers</b>, which <b>validate every one</b> (proof-of-work + merkle root). 
 
 <p class="dim" style="margin-top:14px; border-top:1px solid var(--bd); padding-top:10px">
 PoC scope: <b>Seed 5000</b> pulls real blocks from the network (via the bridge) and relays them to the peer, each validated for
-structure + proof-of-work (no UTXO set, so not full-consensus). Next: relay across more than two peers, and stream the full chain.
+structure + proof-of-work (no UTXO set, so not full-consensus). Every tab connects to every other (full mesh), and a received
+block is <b>gossiped onward</b> to other peers (deduped by a seen-set), so it propagates across the mesh, multi-hop. Next: stream the full chain.
 Default room <code>c0ffeebabe123456</code>; override with
 <code>?room=&lt;hex&gt;</code>, the signaling server with <code>?signal=wss://your.pod/.webrtc</code>, and the block count with <code>?blocks=N</code> (default 5000).</p>
 
@@ -137,16 +138,20 @@ async function seedBlocks(n = 5000) {
   }
 }
 
-// Handle a Bitcoin message arriving from the mesh peer.
-function onMessage(msg) {
+// Handle a Bitcoin message from a mesh peer, validate it, then gossip it onward.
+const seen = new Set();   // block hashes already processed (gossip dedup / loop stop)
+function onMessage(msg, from) {
   if (msg.command !== 'block') return;
   const block = msg.payload;
   const hash = codec.blockHash(block.header);
+  if (seen.has(hash)) return;            // already have it — don't re-validate, re-count, or re-forward
   const failed = be.validateBlockStructure(block).results.filter(r => r.ok === false).map(r => r.rule);
   if (failed.length) { log(`block ${hash.slice(0,16)}… ✗ INVALID: ${failed.join(', ')}`, 'err'); return; }
+  seen.add(hash);
   relayed++; $('relayed').textContent = fmt(relayed);
   $('last').textContent = hash.slice(0, 10) + '…'; $('lasthash').textContent = `${block.transactions.length} txs · PoW + merkle ✓`;
   if (relayed <= 3 || relayed % 100 === 0) log(`✅ received + validated block ${relayed} (${hash.slice(0,16)}…, ${block.transactions.length} txs) from the mesh — no server`, 'ok');
+  peer.forward('block', block, from);    // gossip onward to other peers (not the sender)
 }
 
 $('connect').onclick = async () => {
