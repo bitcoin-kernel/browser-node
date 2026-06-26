@@ -153,7 +153,10 @@ source→one→all via gossip), `test-cfilter-probe.mjs` (BIP157 service probe),
 scan finds a watched output over the network), `test-broadcast.mjs` (announce a signed tx to a real
 peer → it requests via `getdata` → send `tx` → re-`getdata` reads accept/reject; unfunded ⇒ `notfound`),
 `test-mempool.mjs` (live mempool watch: listen to the relay flow + getdata a known txid → decode → output-scan
-matches an unconfirmed payment to a watched address), `live-node-test.mjs`. **Wallet crypto tests** (no
+matches an unconfirmed payment to a watched address), `verify-tx.mjs <rawhex>` (verify a signed tx against the
+LIVE prevouts — fetch each parent from a peer, run BIP143 verifyInput; `BROADCAST=1` relays to the parent-holder;
+diagnoses a broadcast rejection: valid ⇒ peer lacked the parent, invalid ⇒ amount/signing mismatch),
+`live-node-test.mjs`. **Wallet crypto tests** (no
 network): `test-spv-derive.mjs` (address derivation vs BIP84), `test-spv-proof.mjs` (SPV merkle
 proof vs a real block), `test-keygen.mjs` (private BIP32 vs BIP32 vector 1), `test-bip39.mjs`
 (BIP39 generate + import vs the vectors), `test-sign.mjs` (build+sign a P2WPKH input → engine
