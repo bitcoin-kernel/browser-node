@@ -27,26 +27,29 @@
 <p class="dim"><b>Open this page in two tabs</b> (or send the link to a friend). The two tabs become Bitcoin peers to each other
 over <b>WebRTC — no server in the data path</b> — meeting in a room on a signaling server. Then one tab <b>relays a block</b> to
 the other: it announces it (<code>inv</code>), the other requests it (<code>getdata</code>), receives the block, and
-<b>validates it</b> (proof-of-work + merkle root). That's block propagation, in a browser mesh.
+<b>validates it</b> (proof-of-work + merkle root). Or hit <b>Seed 1000</b>: one tab pulls <b>1000 real blocks</b> from the
+network (via the bridge) and propagates them to the other, which validates every one. That's block propagation at volume, in a browser mesh.
 <a href="node.html">the node</a> · <a href="how-it-works.html">how it works</a></p>
 
 <p>
   <button id="connect">▶ Connect to the mesh</button>
-  <button id="share" disabled>📤 Relay block #26,000 to the peer</button>
+  <button id="seed" disabled>🌱 Seed 1000 blocks from the network → peer</button>
+  <button id="share" disabled>📤 Relay block #26,000</button>
   <span id="status" class="dim">idle</span>
 </p>
 
 <div class="grid">
   <div class="card"><div class="k"><span class="dot" id="dot"></span>mesh</div><div class="v" id="mesh">—</div><div class="s" id="role">browser ↔ browser</div></div>
-  <div class="card"><div class="k">blocks relayed</div><div class="v" id="relayed">0</div><div class="s">inv → getdata → block</div></div>
-  <div class="card"><div class="k">last block validated</div><div class="v" id="last">—</div><div class="s" id="lasthash">PoW + merkle</div></div>
+  <div class="card"><div class="k">seeded from network</div><div class="v" id="seeded">—</div><div class="s">bridge → mesh</div></div>
+  <div class="card"><div class="k">blocks received + validated</div><div class="v" id="relayed">0</div><div class="s">inv → getdata → block</div></div>
+  <div class="card"><div class="k">last block</div><div class="v" id="last">—</div><div class="s" id="lasthash">PoW + merkle</div></div>
 </div>
 <div id="log"></div>
 
 <p class="dim" style="margin-top:14px; border-top:1px solid var(--bd); padding-top:10px">
-PoC scope: the relayed block is a bundled sample (<code>data/block-26000.hex</code>), validated for structure + proof-of-work
-(no UTXO set, so not full-consensus). Next steps: source the block live from the network (via the bridge), relay across more
-than two peers, and stream the full chain. Default room <code>c0ffeebabe123456</code>; override with
+PoC scope: <b>Seed 1000</b> pulls real blocks from the network (via the bridge) and relays them to the peer, each validated for
+structure + proof-of-work (no UTXO set, so not full-consensus). <b>Relay block #26,000</b> shows the <code>inv→getdata→block</code>
+request flow on a bundled block. Next: relay across more than two peers, and stream the full chain. Default room <code>c0ffeebabe123456</code>; override with
 <code>?room=&lt;hex&gt;</code> and the signaling server with <code>?signal=wss://your.pod/.webrtc</code>.</p>
 
 <script type="module">
@@ -54,18 +57,20 @@ import { Codec } from './engine/codec/codec.js';
 import { P2pEngine } from './engine/codec/p2p.js';
 import { BlockEngine } from './engine/codec/blocks.js';
 import { MeshPeer } from './peer-mesh.js';
+import { RtcPeer } from './peer-rtc.js';
 
 const $ = (id) => document.getElementById(id);
 const log = (m, c='') => { const t = new Date().toISOString().slice(11,19); $('log').innerHTML += `<span class="dim">${t}</span> <span class="${c}">${m}</span>\n`; $('log').scrollTop = $('log').scrollHeight; };
 const fmt = (n) => Number(n).toLocaleString();
 const setStatus = (m, c='') => $('status').innerHTML = `<span class="${c}">${m}</span>`;
-const MSG_BLOCK = 2;
+const MSG_BLOCK = 2, MSG_WITNESS_BLOCK = 1073741826;
+const toHex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
 
 const q = new URLSearchParams(location.search);
 const signalUrl = q.get('signal') || 'wss://melvincarvalho.com/.webrtc';
 const room = q.get('room') || 'c0ffeebabe123456';   // mesh's own room (distinct from the bridge's room)
 
-let codec, p2p, be, peer = null;
+let codec, p2p, be, peer = null, genesisHash = null;
 const have = new Map();      // blockHash -> hex (blocks we can serve)
 let relayed = 0;
 
@@ -75,6 +80,46 @@ async function loadEngine() {
   codec = new Codec(core, proof, p2pS);
   p2p = P2pEngine.fromSchemas(codec, p2pS, chain, 'btc:testnet4');
   be = BlockEngine.fromSchemas(codec, chain, validate, script, 'btc:testnet4');
+  const vectors = await (await fetch('./data/testnet4.json')).json();
+  genesisHash = codec.blockHash(codec.decode('BlockHeader', vectors.genesisHeader));
+}
+
+// SEED: pull N real blocks from the network (via the bridge), validate each, and
+// relay them to the mesh peer — block propagation at volume, browser→browser.
+async function seedBlocks(n = 1000) {
+  $('seed').disabled = true;
+  const bridgeSignal = q.get('signal') || 'wss://melvincarvalho.com/.webrtc';
+  const bridgeRoom = q.get('bridgeRoom') || 'b17c0192abad1deacafe';   // the bridge's room (its network source)
+  const net = new RtcPeer(p2p, codec);
+  try {
+    setStatus('seed: connecting to the network via the bridge…', 'warn');
+    log(`seed: connecting to the network (bridge room ${bridgeRoom.slice(0, 10)}…)`);
+    await net.connect(bridgeSignal, { room: bridgeRoom });
+    log('seed: connected to a testnet4 peer — fetching headers', 'ok');
+    net.send('getheaders', { version: 70016, blockLocator: [genesisHash], hashStop: '0'.repeat(64) });
+    const hmsg = await net.waitFor(['headers'], 30000);
+    const headers = (hmsg.payload?.entries ?? []).map((e) => e.header);
+    const hashes = headers.slice(0, n).map((h) => codec.blockHash(h));
+    if (hashes.length < n) log(`seed: peer returned ${hashes.length} headers — relaying those`, 'warn');
+    const BATCH = 50; let got = 0; const t0 = performance.now();
+    for (let i = 0; i < hashes.length; i += BATCH) {
+      const batch = hashes.slice(i, i + BATCH);
+      net.send('getdata', { items: batch.map((hash) => ({ type: MSG_WITNESS_BLOCK, hash })) });
+      await net.collect('block', batch.length, { onItem: (msg) => {
+        if (be.validateBlockStructure(msg.payload).results.some((r) => r.ok === false)) return;  // validate before relay
+        peer.send('block', toHex(codec.encode('Block', msg.payload)));                            // relay to the mesh peer
+        got++; $('seeded').textContent = fmt(got);
+      }, timeoutMs: 30000 });
+      setStatus(`seed: relaying ${got}/${hashes.length} blocks to the peer…`, 'warn');
+    }
+    log(`seed: fetched ${got} blocks from the network and relayed them to the mesh peer in ${((performance.now() - t0) / 1000).toFixed(1)}s`, 'ok');
+    setStatus(`● seeded ${got} blocks to the peer`, 'ok');
+    net.close();
+  } catch (e) {
+    setStatus('seed error: ' + e.message, 'err');
+    log('seed: ' + e.message + ' — is the bridge running? (the seed pulls blocks from the network through it)', 'err');
+    $('seed').disabled = false; try { net.close(); } catch {}
+  }
 }
 
 // Handle a Bitcoin message arriving from the mesh peer.
@@ -92,12 +137,10 @@ function onMessage(msg) {
     const block = msg.payload;
     const hash = codec.blockHash(block.header);
     const failed = be.validateBlockStructure(block).results.filter(r => r.ok === false).map(r => r.rule);
-    if (failed.length) { log(`← block ${hash.slice(0,16)}… ✗ INVALID: ${failed.join(', ')}`, 'err'); return; }
-    const reHex = Array.from(codec.encode('Block', block), (b) => b.toString(16).padStart(2, '0')).join('');
-    have.set(hash, reHex);   // now we hold it too — could relay onward (mesh)
+    if (failed.length) { log(`block ${hash.slice(0,16)}… ✗ INVALID: ${failed.join(', ')}`, 'err'); return; }
     relayed++; $('relayed').textContent = fmt(relayed);
-    $('last').textContent = '#26,000'; $('lasthash').textContent = hash.slice(0, 22) + '…';
-    log(`✅ received + validated block ${hash.slice(0,16)}… (${block.transactions.length} txs, PoW + merkle ✓) — from a browser peer, no server`, 'ok');
+    $('last').textContent = hash.slice(0, 10) + '…'; $('lasthash').textContent = `${block.transactions.length} txs · PoW + merkle ✓`;
+    if (relayed <= 3 || relayed % 100 === 0) log(`✅ received + validated block ${relayed} (${hash.slice(0,16)}…, ${block.transactions.length} txs) from the mesh — no server`, 'ok');
   }
 }
 
@@ -111,8 +154,8 @@ $('connect').onclick = async () => {
     peer = new MeshPeer(p2p, codec, { log, onMessage, onOpen: (role) => {
       $('dot').classList.add('live'); $('mesh').textContent = 'connected';
       $('role').textContent = `you are the ${role}`;
-      $('share').disabled = false;
-      setStatus('● connected to a peer — relay a block', 'ok');
+      $('share').disabled = false; $('seed').disabled = false;
+      setStatus('● connected to a peer — seed 1000 blocks, or relay one', 'ok');
       log(`mesh connected (you are the ${role}) — a direct browser↔browser channel, no server in the path`, 'ok');
     } });
     await peer.connect(signalUrl, { room });
@@ -122,6 +165,8 @@ $('connect').onclick = async () => {
     $('connect').disabled = false;
   }
 };
+
+$('seed').onclick = () => seedBlocks(1000);
 
 $('share').onclick = async () => {
   try {
