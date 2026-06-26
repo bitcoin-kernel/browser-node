@@ -83,6 +83,8 @@ export class MeshPeer {
   send(command, payload) { const bytes = this.engine.encodeMessage(command, payload); for (const dc of this.channels) if (dc.readyState === 'open') dc.send(bytes); }
   // Gossip: re-broadcast to every peer except the one it came from.
   forward(command, payload, exceptDc) { const bytes = this.engine.encodeMessage(command, payload); for (const dc of this.channels) if (dc !== exceptDc && dc.readyState === 'open') dc.send(bytes); }
+  // Send to ONE neighbor (for gossip-mode demos: the mesh carries it onward).
+  sendToOne(command, payload) { const bytes = this.engine.encodeMessage(command, payload); for (const dc of this.channels) if (dc.readyState === 'open') { dc.send(bytes); return; } }
   bufferedHigh(max) { for (const dc of this.channels) if (dc.bufferedAmount > max) return true; return false; }
   close() { for (const pc of this.pcs) { try { pc.close(); } catch {} } try { this.ws?.close(); } catch {} }
 

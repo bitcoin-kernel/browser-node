@@ -49,7 +49,8 @@ PoC scope: <b>Seed 5000</b> pulls real blocks from the network (via the bridge) 
 structure + proof-of-work (no UTXO set, so not full-consensus). Every tab connects to every other (full mesh), and a received
 block is <b>gossiped onward</b> to other peers (deduped by a seen-set), so it propagates across the mesh, multi-hop. Next: stream the full chain.
 Default room <code>c0ffeebabe123456</code>; override with
-<code>?room=&lt;hex&gt;</code>, the signaling server with <code>?signal=wss://your.pod/.webrtc</code>, and the block count with <code>?blocks=N</code> (default 5000).</p>
+<code>?room=&lt;hex&gt;</code>, the signaling server with <code>?signal=wss://your.pod/.webrtc</code>, and the block count with <code>?blocks=N</code> (default 5000).
+See gossip in action with <code>?gossip=1</code>: the source sends each block to <b>one</b> neighbor and the mesh carries it to the rest (so a tab the source never sent to still gets every block).</p>
 
 <script type="module">
 import { Codec } from './engine/codec/codec.js';
@@ -69,6 +70,7 @@ const q = new URLSearchParams(location.search);
 const signalUrl = q.get('signal') || 'wss://melvincarvalho.com/.webrtc';
 const room = q.get('room') || 'c0ffeebabe123456';   // mesh's own room (distinct from the bridge's room)
 const seedCount = Math.max(1, parseInt(q.get('blocks'), 10) || 5000);   // ?blocks=N (default 5000)
+const gossipMode = q.get('gossip') === '1';   // ?gossip=1 → seed sends each block to ONE neighbor; the mesh gossips it onward
 
 let codec, p2p, be, peer = null, genesisHash = null;
 let relayed = 0;
@@ -90,6 +92,7 @@ async function drain(p, max = 4 * 1024 * 1024) { while (p.bufferedHigh(max)) awa
 // relay them to the mesh peer — block propagation at volume, browser→browser.
 async function seedBlocks(n = 5000) {
   $('seed').disabled = true;
+  if (gossipMode) log('gossip mode: each block goes to ONE neighbor — the mesh carries it to the rest', 'ok');
   const bridgeSignal = q.get('signal') || 'wss://melvincarvalho.com/.webrtc';
   const bridgeRoom = q.get('bridgeRoom') || 'b17c0192abad1deacafe';   // the bridge's room (its network source)
   const net = new RtcPeer(p2p, codec);
@@ -123,7 +126,7 @@ async function seedBlocks(n = 5000) {
       for (const bytes of out) {
         if (bytes.length > MAX_MSG) { skipped++; continue; }   // too big for one DC message (chunking is a TODO)
         await drain(peer);
-        peer.send('block', toHex(bytes));   // broadcast to every connected peer
+        if (gossipMode) peer.sendToOne('block', toHex(bytes)); else peer.send('block', toHex(bytes));   // gossip: one neighbor; the mesh carries it onward
         got++; $('seeded').textContent = fmt(got);
       }
       setStatus(`seed: relaying ${fmt(got)}/${fmt(hashes.length)}${skipped ? ` (${skipped} too large, skipped)` : ''}…`, 'warn');
