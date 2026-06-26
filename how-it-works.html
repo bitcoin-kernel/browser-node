@@ -91,6 +91,13 @@ linkage, reorgs. The bridge is pure plumbing: it can withhold data, but it <em>c
 because the tab does the checking. With it, the tab reached the live tip — and caught blocks that were mined
 <em>while it was running</em>.</p>
 
+<p><b>But that bridge only ran on localhost.</b> At first, yes. Then it learned to speak <em>WebRTC</em>: the tab and
+the bridge meet in a room on a signaling server — a <a href="https://github.com/JavaScriptSolidServer/JavaScriptSolidServer">JavaScript
+Solid Server</a> pod — then connect directly, NAT-traversed and encrypted, with no open port and no certificate. So the
+bridge can live anywhere, and the live feed works the moment a stranger clicks the link, signaled entirely through
+someone's pod. The same WebRTC that delivers the snapshot now carries the p2p stream too. (A separate page just
+<a href="tip.html">follows the live tip</a> — validating each new header as testnet4 mines it.)</p>
+
 <figure>
 <svg viewBox="0 0 680 290" class="svgtxt" role="img" aria-label="The node lives entirely in the browser tab. A thin WS-to-TCP bridge relays Bitcoin p2p to public peers; WebTorrent delivers the snapshot directly.">
   <defs>
@@ -259,7 +266,8 @@ wall came down to a subtraction.</p>
 
 <div class="foot">
 Try it: <a href="index.html">the acts, explained</a> · <a href="node.html">the running node</a> ·
-<a href="fullchain.html">validate from genesis</a> · <a href="https://github.com/bitcoin-kernel/browser-node">source</a><br>
+<a href="tip.html">follow the tip</a> · <a href="fullchain.html">validate from genesis</a> ·
+<a href="https://github.com/bitcoin-kernel/browser-node">source</a><br>
 Built on <a href="https://github.com/bitcoin-kernel/node">bitcoin-kernel/node</a> and the
 <code>@bitcoin-desktop/schema</code> consensus engine. AGPL-3.0.
 </div>
