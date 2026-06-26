@@ -48,6 +48,7 @@ This is the same pipeline as <a href="node.html">the running node</a>, just spli
   <div class="grid">
     <div class="card"><div class="k">network</div><div class="v">testnet4</div><div class="s" id="engine">engine: idle</div></div>
     <div class="card"><div class="k"><span class="dot" id="hdot"></span>header tip (live)</div><div class="v" id="htip">—</div><div class="s" id="hsub">via WS↔TCP bridge</div><div class="cbar" id="hbarw"><i id="hbar"></i></div></div>
+    <div class="card"><div class="k"><span class="dot" id="bdot"></span>listening at the tip</div><div class="v" id="beat">—</div><div class="s" id="beatsub">press Start</div></div>
     <div class="card"><div class="k">UTXO set</div><div class="v" id="utxo">—</div><div class="s">RAM, checkpointed to OPFS</div></div>
     <div class="card"><div class="k">persistence</div><div class="v" id="ckpt">—</div><div class="s">OPFS sync access handle</div></div>
     <div class="card"><div class="k">set consistency</div><div class="v" id="swift">—</div><div class="s" id="swiftsub">SwiftSync · 32-byte accumulator</div></div>
@@ -139,10 +140,13 @@ async function runHeaderFeed() {
       log(`new block: header tip → #${fmt(height)} (${hash.slice(0, 16)}…)`, 'ok');
       if (reorgs && reorgs.length) log(`reorg handled while following (${reorgs.length})`, 'warn');
     } });
-    // heartbeat: tick every second so it's visibly listening, even between blocks
+    // heartbeat: its own card with a big number ticking every second, so it's
+    // obviously listening even between blocks.
+    $('bdot').classList.add('live');
+    $('beatsub').textContent = 'since last block · polling every 8s';
     setInterval(() => {
       const s = Math.round((Date.now() - lastBlockAt) / 1000);
-      $('hsub').textContent = (webrtc ? 'WebRTC' : 'bridge') + `: following the tip · ${s}s since last block`;
+      $('beat').textContent = s + 's';
     }, 1000);
     log('following the tip — new headers validate as the network mines them', 'dim');
   } catch (e) {
