@@ -61,7 +61,7 @@ const $ = (id) => document.getElementById(id);
 const log = (m, c='') => { const t = new Date().toISOString().slice(11,19); $('log').innerHTML += `<span class="dim">${t}</span> <span class="${c}">${m}</span>\n`; $('log').scrollTop = $('log').scrollHeight; };
 const fmt = (n) => Number(n).toLocaleString();
 const setStatus = (m, c='') => $('status').innerHTML = `<span class="${c}">${m}</span>`;
-const MSG_BLOCK = 2, MSG_WITNESS_BLOCK = 1073741826;
+const MSG_WITNESS_BLOCK = 1073741826;
 const toHex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
 
 const q = new URLSearchParams(location.search);
@@ -70,7 +70,6 @@ const room = q.get('room') || 'c0ffeebabe123456';   // mesh's own room (distinct
 const seedCount = Math.max(1, parseInt(q.get('blocks'), 10) || 5000);   // ?blocks=N (default 5000)
 
 let codec, p2p, be, peer = null, genesisHash = null;
-const have = new Map();      // blockHash -> hex (blocks we can serve)
 let relayed = 0;
 
 async function loadEngine() {
@@ -143,24 +142,14 @@ async function seedBlocks(n = 5000) {
 
 // Handle a Bitcoin message arriving from the mesh peer.
 function onMessage(msg) {
-  if (msg.command === 'inv') {
-    for (const it of msg.payload?.items ?? []) {
-      if (!have.has(it.hash)) { log(`← inv: peer has block ${it.hash.slice(0,16)}… → requesting (getdata)`); peer.send('getdata', { items: [{ type: MSG_BLOCK, hash: it.hash }] }); }
-    }
-  } else if (msg.command === 'getdata') {
-    for (const it of msg.payload?.items ?? []) {
-      const hex = have.get(it.hash);
-      if (hex) { log(`← getdata for ${it.hash.slice(0,16)}… → sending the block`); peer.send('block', hex); }
-    }
-  } else if (msg.command === 'block') {
-    const block = msg.payload;
-    const hash = codec.blockHash(block.header);
-    const failed = be.validateBlockStructure(block).results.filter(r => r.ok === false).map(r => r.rule);
-    if (failed.length) { log(`block ${hash.slice(0,16)}… ✗ INVALID: ${failed.join(', ')}`, 'err'); return; }
-    relayed++; $('relayed').textContent = fmt(relayed);
-    $('last').textContent = hash.slice(0, 10) + '…'; $('lasthash').textContent = `${block.transactions.length} txs · PoW + merkle ✓`;
-    if (relayed <= 3 || relayed % 100 === 0) log(`✅ received + validated block ${relayed} (${hash.slice(0,16)}…, ${block.transactions.length} txs) from the mesh — no server`, 'ok');
-  }
+  if (msg.command !== 'block') return;
+  const block = msg.payload;
+  const hash = codec.blockHash(block.header);
+  const failed = be.validateBlockStructure(block).results.filter(r => r.ok === false).map(r => r.rule);
+  if (failed.length) { log(`block ${hash.slice(0,16)}… ✗ INVALID: ${failed.join(', ')}`, 'err'); return; }
+  relayed++; $('relayed').textContent = fmt(relayed);
+  $('last').textContent = hash.slice(0, 10) + '…'; $('lasthash').textContent = `${block.transactions.length} txs · PoW + merkle ✓`;
+  if (relayed <= 3 || relayed % 100 === 0) log(`✅ received + validated block ${relayed} (${hash.slice(0,16)}…, ${block.transactions.length} txs) from the mesh — no server`, 'ok');
 }
 
 $('connect').onclick = async () => {
