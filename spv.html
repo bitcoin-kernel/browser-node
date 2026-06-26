@@ -25,8 +25,8 @@
 <body>
 <h1>bitcoin-kernel / browser-node — watch-only SPV wallet <span class="dim">(testnet4)</span></h1>
 <p class="dim">A <b>watch-only</b> wallet: paste an extended public key (<code>tpub…</code> for testnet, <code>xpub…</code> for mainnet)
-and it derives your receiving <b>addresses</b> — <b>no private keys anywhere</b> (this codebase is verification-only). This is
-stage&nbsp;1 of an SPV wallet; next it will scan the chain for payments (BIP158 filters) and verify them (SPV merkle proofs).
+and it derives your receiving <b>addresses</b> — <b>no private keys anywhere</b> (this codebase is verification-only). Below,
+it also <b>verifies SPV inclusion proofs</b> (&#9313;). Next: scan the chain for your payments (BIP158 filters) + balance.
 Need an xpub? That'll live on a separate keys page. <a href="how-it-works.html">how it works</a> · <a href="node.html">the node</a></p>
 
 <div class="row"><label style="min-width:120px">extended pubkey</label></div>
@@ -40,23 +40,39 @@ Need an xpub? That'll live on a separate keys page. <a href="how-it-works.html">
 
 <div id="out"></div>
 
+<p style="font-weight:700; font-size:15px; margin:28px 0 4px">&#9313; Verify a transaction is in a block <span class="dim">— SPV</span></p>
+<p class="dim">An SPV client confirms a payment with a tiny <b>merkle proof</b> plus the block header &mdash; no full block, no full chain.
+Here we take a real testnet4 block (#26,000), build a BIP37 proof for one transaction, and verify it (proof-of-work, a well-formed
+tree, the root matching the header, and the tx included). In a real wallet the proof comes from a peer; we build it here to show the check.</p>
+<div class="row">
+  <button id="verify">&#9656; Verify inclusion</button>
+  <span class="dim">tx index <input id="txi" type="number" value="7" min="0" style="width:60px"></span>
+  <span id="spvstatus" class="dim"></span>
+</div>
+<div id="spvout"></div>
+
 <p class="dim" style="margin-top:18px; border-top:1px solid var(--bd); padding-top:10px">
 Watch-only, BIP32 (BIP84 <code>m/84'/net'/0'</code> account · receiving chain <code>0/i</code>, P2WPKH). Derivation verified
-against the published BIP84 test vector (<code>test-spv-derive.mjs</code>). The default value is an <b>example</b> testnet
-key — paste your own. No network calls yet; balances/SPV come next.</p>
+against the BIP84 vector (<code>test-spv-derive.mjs</code>); SPV proof verification against a real block (<code>test-spv-proof.mjs</code>).
+The default value is an <b>example</b> testnet key. Next: chain scanning (BIP158) for payments + balance.</p>
 
 <script type="module">
 import { Bip32 } from './engine/codec/wallet.js';
 import { ScriptEngine } from './engine/codec/script.js';
+import { Codec } from './engine/codec/codec.js';
+import { SpvEngine } from './engine/codec/spv.js';
+import { dsha256, hexToBytes, bytesToHex } from './engine/codec/hash.js';
 
 const $ = (id) => document.getElementById(id);
-let seTestnet = null, seMainnet = null;
+let seTestnet = null, seMainnet = null, codec = null, spv = null, blockCache = null;
 
 async function loadEngines() {
   const jl = (n) => fetch(`./engine/schema/${n}.jsonld`).then(r => r.json());
-  const [script, chain] = await Promise.all([jl('script'), jl('chain')]);
+  const [script, chain, core, proof, p2p, validate] = await Promise.all(['script','chain','core','proof','p2p','validate'].map(jl));
   seTestnet = ScriptEngine.fromSchemas(script, chain, 'btc:testnet4');
   seMainnet = ScriptEngine.fromSchemas(script, chain, 'btc:mainnet');
+  codec = new Codec(core, proof, p2p);
+  spv = SpvEngine.fromSchemas(codec, validate);
 }
 
 function derive() {
@@ -79,6 +95,39 @@ function derive() {
 
 $('derive').onclick = derive;
 $('xkey').addEventListener('keydown', (e) => { if (e.key === 'Enter') derive(); });
+
+// ── ② SPV merkle-proof verification ──
+// Build a BIP37 partial merkle tree (CPartialMerkleTree) proving txids[matchIdx].
+function buildProof(txids, matchIdx) {
+  const n = txids.length;
+  const leaves = txids.map((t) => hexToBytes(t).reverse());
+  const width = (h) => (n + (1 << h) - 1) >>> h;
+  let height = 0; while (width(height) > 1) height++;
+  const calc = (h, pos) => { if (h === 0) return leaves[pos]; const l = calc(h - 1, pos * 2); const r = (pos * 2 + 1 < width(h - 1)) ? calc(h - 1, pos * 2 + 1) : l; return dsha256(new Uint8Array([...l, ...r])); };
+  const underMatch = (h, pos) => matchIdx >= (pos << h) && matchIdx < ((pos + 1) << h);
+  const vBits = [], vHash = [];
+  const traverse = (h, pos) => { const f = underMatch(h, pos); vBits.push(f ? 1 : 0); if (h === 0 || !f) vHash.push(bytesToHex(calc(h, pos).slice().reverse())); else { traverse(h - 1, pos * 2); if (pos * 2 + 1 < width(h - 1)) traverse(h - 1, pos * 2 + 1); } };
+  traverse(height, 0);
+  const flags = new Uint8Array(Math.ceil(vBits.length / 8));
+  vBits.forEach((b, i) => { if (b) flags[i >> 3] |= 1 << (i & 7); });
+  return { txCount: n, hashes: vHash, flags: bytesToHex(flags) };
+}
+
+async function verifyInclusion() {
+  if (!blockCache) { const hex = (await (await fetch('./data/block-26000.hex')).text()).trim(); blockCache = codec.decode('Block', hex); blockCache._bytes = hex.length / 2; }
+  const block = blockCache;
+  const txids = block.transactions.map((tx) => codec.txid(tx));
+  const i = Math.max(0, Math.min(txids.length - 1, parseInt($('txi').value, 10) || 0));
+  const proof = buildProof(txids, i);
+  const r = spv.verify({ header: block.header, ...proof }, { txid: txids[i] });
+  const psize = proof.hashes.length * 32 + proof.flags.length / 2;
+  const rows = r.results.map((c) => `<tr><td>${c.ok ? '<span class="ok">✓</span>' : '<span class="err">✗</span>'}</td><td>${c.label}</td></tr>`).join('');
+  $('spvout').innerHTML = `<p class="dim">tx <code class="addr">${txids[i]}</code> · index ${i} of ${txids.length}</p>` +
+    `<table><tr><th style="width:40px"></th><th>SPV check</th></tr>${rows}</table>` +
+    `<p class="dim" style="margin-top:8px">merkle proof: <b>${proof.hashes.length} hashes + ${proof.flags.length / 2}-byte flags &asymp; ${psize} bytes</b> vs the full block's ${block._bytes} bytes &mdash; verified against block&nbsp;#26,000's PoW-validated header.</p>`;
+  $('spvstatus').innerHTML = r.ok ? '<span class="ok">&check; included</span>' : '<span class="err">&times; failed</span>';
+}
+$('verify').onclick = verifyInclusion;
 
 await loadEngines();
 $('status').textContent = 'engine ready — press Derive';
