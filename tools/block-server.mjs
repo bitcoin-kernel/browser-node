@@ -27,8 +27,23 @@ http.createServer(async (req, res) => {
   try {
     const lo = +m[1], count = Math.min(+m[2], 1000);
     const heights = []; for (let h = lo; h < lo + count; h++) heights.push(h);
-    const hashes = (await rpcBatch(heights.map((h) => ({ method: 'getblockhash', params: [h] })))).map((r) => r.result).filter(Boolean);
-    const raws = (await rpcBatch(hashes.map((h) => ({ method: 'getblock', params: [h, 0] })))).map((r) => r.result);
+    // retry-until-complete: testnet4 reorgs a lot (shallow), which can briefly make a
+    // block un-fetchable; NEVER silently drop one (that would misalign heights and
+    // corrupt a downstream accumulator). Retry, then 500 if still missing.
+    const fetchAll = async (calls) => {
+      let out = new Array(calls.length).fill(null), pending = calls.map((c, i) => i);
+      for (let attempt = 0; attempt < 6 && pending.length; attempt++) {
+        if (attempt) await new Promise((r) => setTimeout(r, 200));
+        const rs = await rpcBatch(pending.map((i) => calls[i]));
+        const still = [];
+        rs.forEach((r, k) => { const i = pending[k]; if (r && r.result != null) out[i] = r.result; else still.push(i); });
+        pending = still;
+      }
+      if (pending.length) throw new Error(`could not fetch ${pending.length} item(s) after retries (height ${lo + pending[0]})`);
+      return out;
+    };
+    const hashes = await fetchAll(heights.map((h) => ({ method: 'getblockhash', params: [h] })));
+    const raws = await fetchAll(hashes.map((h) => ({ method: 'getblock', params: [h, 0] })));
     res.writeHead(200, { 'Content-Type': 'text/plain' });
     res.end(raws.join('\n'));
   } catch (e) { res.writeHead(500); res.end(e.message); }
