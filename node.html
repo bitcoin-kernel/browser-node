@@ -37,12 +37,13 @@ persistence all run in a <b>Web Worker</b>, and set-consistency is checked with 
 <div class="grid">
   <div class="card"><div class="k">network</div><div class="v">testnet4</div><div class="s" id="engine">engine: idle</div></div>
   <div class="card"><div class="k"><span class="dot" id="hdot"></span>header tip (live)</div><div class="v" id="htip">—</div><div class="s" id="hsub">via WS↔TCP bridge</div><div class="cbar" id="hbarw"><i id="hbar"></i></div></div>
-  <div class="card"><div class="k">validated height</div><div class="v" id="vheight">—</div><div class="s" id="vsub">full consensus, in worker</div><div class="cbar" id="vbarw"><i id="vbar"></i></div></div>
+  <div class="card"><div class="k">full-consensus window</div><div class="v" id="vheight">—</div><div class="s" id="vsub">every script + signature, in worker</div><div class="cbar" id="vbarw"><i id="vbar"></i></div></div>
   <div class="card"><div class="k">UTXO set</div><div class="v" id="utxo">—</div><div class="s">RAM, checkpointed to OPFS</div></div>
   <div class="card"><div class="k">blocks validated</div><div class="v" id="nblocks">0</div><div class="s" id="bps"></div></div>
   <div class="card"><div class="k">persistence</div><div class="v" id="ckpt">—</div><div class="s">OPFS sync access handle</div></div>
   <div class="card"><div class="k">set consistency</div><div class="v" id="swift">—</div><div class="s" id="swiftsub">SwiftSync · 32-byte accumulator</div></div>
 </div>
+<p class="dim" style="margin:-2px 0 10px; font-size:12px">Three scopes, not one chain: <b>header tip</b> validates every header to the <b>live tip</b> · <b>full-consensus window</b> deep-checks a bounded range (scripts + signatures need the full UTXO set in RAM — the 25 GB wall) · <b>set consistency</b> (SwiftSync, 32 bytes) scales that check to the whole chain.</p>
 <div id="log"></div>
 
 <p class="dim" style="margin-top:14px; border-top:1px solid var(--bd); padding-top:10px">
@@ -156,6 +157,7 @@ $('start').onclick = async () => {
     _onProgress = null;
     $('vbar').style.width = '100%'; $('vbarw').classList.add('done');
     $('vheight').textContent = '#' + fmt(r.end);
+    $('vsub').innerHTML = `<span class="ok">✓ window #${fmt(r.start)}–${fmt(r.end)} fully checked</span> — full scripts &amp; sigs (full set is memory-bound)`;
     log(`validated forward #${fmt(r.start)}→#${fmt(r.end)}: ${fmt(r.validated)}/${fmt(r.total)} blocks, UTXO ${fmt(r.utxoStart)}→${fmt(r.utxoEnd)} in ${r.ms.toFixed(0)}ms (worker, WASM secp)`, 'ok');
 
     const ck = await wcall('checkpoint');
@@ -168,8 +170,8 @@ $('start').onclick = async () => {
     $('swiftsub').textContent = `SwiftSync · ${ss.stateBytes} bytes · ${fmt(ss.created)}+ ${fmt(ss.spent)}− · ${ss.ms.toFixed(0)}ms`;
     log(`SwiftSync set-consistency: ${ss.zero ? 'reconciles to ZERO' : 'NON-ZERO'} with ${ss.stateBytes} bytes — no UTXO set held for double-spend checks (the path past the 25 GB ceiling at scale)`, ss.zero ? 'ok' : 'err');
 
-    setStatus(`● running — fully validated to #${fmt(r.end)}; watching the tip`, 'ok');
-    log('node running. Headers live from the network; UTXO bootstrapped + validated forward in the worker.', 'ok');
+    setStatus(`● running — headers validating to the live tip · full-consensus deep-check of a ${fmt(r.validated)}-block window ✓ · set-consistency reconciled (SwiftSync, 32 B)`, 'ok');
+    log('node running. Headers reach the live tip; a bounded window is deep-validated (full scripts/sigs); SwiftSync scales that check to the whole chain in 32 bytes.', 'ok');
   } catch (e) { setStatus('error: ' + e.message, 'err'); log('node error: ' + e.message, 'err'); console.error(e); $('start').disabled = false; }
 };
 
