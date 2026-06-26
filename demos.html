@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>bitcoin-kernel/browser-node — the demos</title>
+<style>
+  :root { --bg:#fff; --fg:#16181d; --mut:#5b6470; --bd:#e6e8eb; --pan:#fafbfc; --ac:#e8830c; --ac2:#0969da; --good:#1a7f37; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; color-scheme:light; }
+  body { background:var(--bg); color:var(--fg); font:14px/1.55 var(--mono); max-width:780px; margin:24px auto; padding:0 16px 60px; }
+  h1 { font-size:19px; } h2 { font-size:14px; color:var(--mut); text-transform:uppercase; letter-spacing:.05em; margin:26px 0 10px; font-weight:700; }
+  a { color:var(--ac2); text-decoration:none; } a:hover { text-decoration:underline; }
+  .demo { border:1px solid var(--bd); border-radius:8px; padding:12px 14px; background:var(--pan); margin:10px 0; }
+  .demo .t { font-size:15px; font-weight:700; }
+  .demo .d { color:var(--fg); margin:5px 0 7px; }
+  .demo .m { color:var(--mut); font-size:12px; }
+  .tag { display:inline-block; font-size:11px; border:1px solid var(--bd); border-radius:999px; padding:1px 8px; margin-left:6px; color:var(--mut); vertical-align:middle; }
+  .tag.live { color:var(--ac); border-color:var(--ac); }
+  .tag.self { color:var(--good); border-color:var(--good); }
+  code { background:#fff; border:1px solid var(--bd); border-radius:4px; padding:0 4px; font-size:.92em; }
+  .lead { color:var(--mut); }
+</style>
+</head>
+<body>
+<h1>bitcoin-kernel / browser-node — the demos</h1>
+<p class="lead">A Bitcoin <b>testnet4</b> node, piece by piece, in a browser tab. Each page below demonstrates one capability.
+Some need a <b>bridge</b> to a testnet4 peer (a tab can't open raw TCP); those links point at a live WebRTC bridge.
+<a href="how-it-works.html">how it all works →</a></p>
+
+<h2>The node</h2>
+
+<div class="demo">
+  <div class="t"><a href="node.html?signal=wss://melvincarvalho.com/.webrtc&room=b17c0192abad1deacafe">Running node ▸ node.html</a><span class="tag live">live · needs bridge</span></div>
+  <div class="d">The full pipeline in one dashboard: stream + validate the header chain, bootstrap the UTXO set from an assumeUTXO snapshot, validate blocks forward (full scripts + signatures, WASM secp, in a Web&nbsp;Worker), persist to OPFS, and check set-consistency with a SwiftSync 32-byte accumulator.</div>
+</div>
+
+<div class="demo">
+  <div class="t"><a href="fullnode.html?signal=wss://melvincarvalho.com/.webrtc&room=b17c0192abad1deacafe">Toward a full node ▸ fullnode.html</a><span class="tag live">live · needs bridge</span></div>
+  <div class="d">The same node split into two tabs — <b>① Node</b> (sync · assumeUTXO · SwiftSync) which <b>follows the live tip</b> with a "listening" heartbeat, and <b>② Validation</b> (the full-consensus block checks, lifted into their own lane).</div>
+</div>
+
+<div class="demo">
+  <div class="t"><a href="tip.html?signal=wss://melvincarvalho.com/.webrtc&room=b17c0192abad1deacafe">Follow the tip ▸ tip.html</a><span class="tag live">live · needs bridge</span></div>
+  <div class="d">Syncs the header chain to the tip, then <b>keeps pace</b> — validating each new header (proof-of-work, BIP94 difficulty, linkage) as testnet4 mines it, handling reorgs, live in the tab.</div>
+</div>
+
+<h2>assumeUTXO &amp; SwiftSync</h2>
+
+<div class="demo">
+  <div class="t"><a href="verify.html">Verify the snapshot ▸ verify.html</a><span class="tag self">self-contained</span></div>
+  <div class="d">Streams a Bitcoin Core <code>dumptxoutset</code> snapshot (the full <b>14.1M-coin</b> UTXO set) through the SwiftSync accumulator and confirms it hashes to the commitment <code>af37b01d…</code> — holding only <b>32 bytes</b> of state. Data source is a link param (HTTP or WebTorrent).</div>
+</div>
+
+<div class="demo">
+  <div class="t"><a href="fullchain.html">Validate from genesis ▸ fullchain.html</a><span class="tag">needs a local block-server</span></div>
+  <div class="d">Streams blocks genesis→N through the SwiftSync accumulator (set-consistency) in the tab — the path past the 25&nbsp;GB UTXO-set wall, demonstrated end to end.</div>
+</div>
+
+<h2>Propagation (the mesh)</h2>
+
+<div class="demo">
+  <div class="t"><a href="mesh.html?signal=wss://melvincarvalho.com/.webrtc&room=c0ffeebabe123456">Block propagation ▸ mesh.html</a><span class="tag live">open in two tabs</span></div>
+  <div class="d">Two browser tabs become <b>Bitcoin peers to each other over WebRTC</b> — no server in the data path. One pulls thousands of real blocks from the network and <b>propagates them to the other</b>, which validates every one. Set the count with <code>?blocks=N</code>.</div>
+  <div class="m">Open this link in <b>two</b> tabs, connect both, then hit “Seed”. Variants: <a href="mesh.html?signal=wss://melvincarvalho.com/.webrtc&room=c0ffeebabe123456&blocks=1000">1000</a> · <a href="mesh.html?signal=wss://melvincarvalho.com/.webrtc&room=c0ffeebabe123456">5000</a> · <a href="mesh.html?signal=wss://melvincarvalho.com/.webrtc&room=c0ffeebabe123456&blocks=10000">10000</a> blocks.</div>
+</div>
+
+<h2>Read</h2>
+
+<div class="demo">
+  <div class="t"><a href="how-it-works.html">How it works ▸ how-it-works.html</a><span class="tag self">self-contained</span></div>
+  <div class="d">The story, for a Bitcoiner: from a torrented snapshot to a node in a tab, the 25&nbsp;GB wall, and the 32-byte punchline — with diagrams.</div>
+</div>
+
+<div class="demo">
+  <div class="t"><a href="index.html">The eleven acts ▸ index.html</a><span class="tag self">self-contained</span></div>
+  <div class="d">The original act-by-act showcase, each capability as its own small demonstration.</div>
+</div>
+
+<p class="lead" style="margin-top:24px; border-top:1px solid var(--bd); padding-top:12px">
+The “live” demos use a WebRTC bridge to a real testnet4 peer (signaled by a JavaScript Solid Server pod). The bridge is pure
+transport — it can withhold data but can't forge anything; the tab validates everything. Hard-reload (<code>Ctrl/Cmd+Shift+R</code>)
+if a page was cached. <a href="https://github.com/bitcoin-kernel/browser-node">source</a> · <a href="AGENT.md">AGENT.md</a></p>
+</body>
+</html>
