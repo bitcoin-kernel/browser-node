@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>bitcoin-kernel/browser-node — mesh: browser↔browser block propagation</title>
+<style>
+  :root { --bg:#fff; --fg:#16181d; --mut:#5b6470; --bd:#e6e8eb; --pan:#fafbfc; --ac:#e8830c; --ac2:#0969da; --good:#1a7f37; --bad:#cf222e; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; color-scheme:light; }
+  body { background:var(--bg); color:var(--fg); font:14px/1.5 var(--mono); max-width:760px; margin:24px auto; padding:0 16px; }
+  h1 { font-size:18px; } a { color:var(--ac2); }
+  button { background:var(--pan); color:var(--fg); border:1px solid var(--bd); border-radius:6px; padding:9px 16px; cursor:pointer; font:inherit; }
+  button:hover { background:#f0f2f4; border-color:var(--ac); } button:disabled { opacity:.45; cursor:default; }
+  .grid { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin:14px 0; }
+  .card { border:1px solid var(--bd); border-radius:8px; padding:10px 12px; background:var(--pan); }
+  .card .k { color:var(--mut); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+  .card .v { font-size:20px; color:var(--fg); margin-top:3px; }
+  .card .s { color:var(--mut); font-size:12px; }
+  #log { background:var(--pan); border:1px solid var(--bd); border-radius:6px; padding:12px; height:200px; overflow:auto; white-space:pre-wrap; margin-top:12px; }
+  .ok{color:var(--good)} .warn{color:var(--ac)} .err{color:var(--bad)} .dim{color:var(--mut)}
+  .dot{ display:inline-block; width:9px; height:9px; border-radius:50%; background:var(--mut); margin-right:6px; vertical-align:middle; }
+  .dot.live{ background:var(--good); animation:pulse 2s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.35} }
+</style>
+</head>
+<body>
+<h1>bitcoin-kernel / browser-node — mesh <span class="dim">(block propagation · PoC)</span></h1>
+<p class="dim"><b>Open this page in two tabs</b> (or send the link to a friend). The two tabs become Bitcoin peers to each other
+over <b>WebRTC — no server in the data path</b> — meeting in a room on a signaling server. Then one tab <b>relays a block</b> to
+the other: it announces it (<code>inv</code>), the other requests it (<code>getdata</code>), receives the block, and
+<b>validates it</b> (proof-of-work + merkle root). That's block propagation, in a browser mesh.
+<a href="node.html">the node</a> · <a href="how-it-works.html">how it works</a></p>
+
+<p>
+  <button id="connect">▶ Connect to the mesh</button>
+  <button id="share" disabled>📤 Relay block #26,000 to the peer</button>
+  <span id="status" class="dim">idle</span>
+</p>
+
+<div class="grid">
+  <div class="card"><div class="k"><span class="dot" id="dot"></span>mesh</div><div class="v" id="mesh">—</div><div class="s" id="role">browser ↔ browser</div></div>
+  <div class="card"><div class="k">blocks relayed</div><div class="v" id="relayed">0</div><div class="s">inv → getdata → block</div></div>
+  <div class="card"><div class="k">last block validated</div><div class="v" id="last">—</div><div class="s" id="lasthash">PoW + merkle</div></div>
+</div>
+<div id="log"></div>
+
+<p class="dim" style="margin-top:14px; border-top:1px solid var(--bd); padding-top:10px">
+PoC scope: the relayed block is a bundled sample (<code>data/block-26000.hex</code>), validated for structure + proof-of-work
+(no UTXO set, so not full-consensus). Next steps: source the block live from the network (via the bridge), relay across more
+than two peers, and stream the full chain. Default room <code>c0ffeebabe123456</code>; override with
+<code>?room=&lt;hex&gt;</code> and the signaling server with <code>?signal=wss://your.pod/.webrtc</code>.</p>
+
+<script type="module">
+import { Codec } from './engine/codec/codec.js';
+import { P2pEngine } from './engine/codec/p2p.js';
+import { BlockEngine } from './engine/codec/blocks.js';
+import { MeshPeer } from './peer-mesh.js';
+
+const $ = (id) => document.getElementById(id);
+const log = (m, c='') => { const t = new Date().toISOString().slice(11,19); $('log').innerHTML += `<span class="dim">${t}</span> <span class="${c}">${m}</span>\n`; $('log').scrollTop = $('log').scrollHeight; };
+const fmt = (n) => Number(n).toLocaleString();
+const setStatus = (m, c='') => $('status').innerHTML = `<span class="${c}">${m}</span>`;
+const MSG_BLOCK = 2;
+
+const q = new URLSearchParams(location.search);
+const signalUrl = q.get('signal') || 'wss://melvincarvalho.com/.webrtc';
+const room = q.get('room') || 'c0ffeebabe123456';   // mesh's own room (distinct from the bridge's room)
+
+let codec, p2p, be, peer = null;
+const have = new Map();      // blockHash -> hex (blocks we can serve)
+let relayed = 0;
+
+async function loadEngine() {
+  const jl = (n) => fetch(`./engine/schema/${n}.jsonld`).then(r => r.json());
+  const [core, proof, p2pS, chain, validate, script] = await Promise.all(['core','proof','p2p','chain','validate','script'].map(jl));
+  codec = new Codec(core, proof, p2pS);
+  p2p = P2pEngine.fromSchemas(codec, p2pS, chain, 'btc:testnet4');
+  be = BlockEngine.fromSchemas(codec, chain, validate, script, 'btc:testnet4');
+}
+
+// Handle a Bitcoin message arriving from the mesh peer.
+function onMessage(msg) {
+  if (msg.command === 'inv') {
+    for (const it of msg.payload?.items ?? []) {
+      if (!have.has(it.hash)) { log(`← inv: peer has block ${it.hash.slice(0,16)}… → requesting (getdata)`); peer.send('getdata', { items: [{ type: MSG_BLOCK, hash: it.hash }] }); }
+    }
+  } else if (msg.command === 'getdata') {
+    for (const it of msg.payload?.items ?? []) {
+      const hex = have.get(it.hash);
+      if (hex) { log(`← getdata for ${it.hash.slice(0,16)}… → sending the block`); peer.send('block', hex); }
+    }
+  } else if (msg.command === 'block') {
+    const block = msg.payload;
+    const hash = codec.blockHash(block.header);
+    const failed = be.validateBlockStructure(block).results.filter(r => r.ok === false).map(r => r.rule);
+    if (failed.length) { log(`← block ${hash.slice(0,16)}… ✗ INVALID: ${failed.join(', ')}`, 'err'); return; }
+    const reHex = Array.from(codec.encode('Block', block), (b) => b.toString(16).padStart(2, '0')).join('');
+    have.set(hash, reHex);   // now we hold it too — could relay onward (mesh)
+    relayed++; $('relayed').textContent = fmt(relayed);
+    $('last').textContent = '#26,000'; $('lasthash').textContent = hash.slice(0, 22) + '…';
+    log(`✅ received + validated block ${hash.slice(0,16)}… (${block.transactions.length} txs, PoW + merkle ✓) — from a browser peer, no server`, 'ok');
+  }
+}
+
+$('connect').onclick = async () => {
+  $('connect').disabled = true;
+  try {
+    setStatus('loading engine…', 'warn');
+    if (!be) await loadEngine();
+    setStatus(`joining the mesh room ${room.slice(0,10)}…`, 'warn');
+    log(`connecting to the mesh (signaling ${signalUrl})…`);
+    peer = new MeshPeer(p2p, codec, { log, onMessage, onOpen: (role) => {
+      $('dot').classList.add('live'); $('mesh').textContent = 'connected';
+      $('role').textContent = `you are the ${role}`;
+      $('share').disabled = false;
+      setStatus('● connected to a peer — relay a block', 'ok');
+      log(`mesh connected (you are the ${role}) — a direct browser↔browser channel, no server in the path`, 'ok');
+    } });
+    await peer.connect(signalUrl, { room });
+  } catch (e) {
+    setStatus('mesh error: ' + e.message, 'err');
+    log('mesh: ' + e.message + ' — is the page open in a second tab? (one tab waits for the other)', 'err');
+    $('connect').disabled = false;
+  }
+};
+
+$('share').onclick = async () => {
+  try {
+    const hex = (await (await fetch('./data/block-26000.hex')).text()).trim();
+    const block = codec.decode('Block', hex);
+    const hash = codec.blockHash(block.header);
+    have.set(hash, hex);
+    log(`announcing block #26,000 ${hash.slice(0,16)}… to the peer (inv)`, 'ok');
+    peer.send('inv', { items: [{ type: MSG_BLOCK, hash }] });
+  } catch (e) { log('share failed: ' + e.message, 'err'); }
+};
+
+log(`idle — press ▶ Connect, then open this page in a second tab. Room ${room.slice(0,10)}… via ${signalUrl}.`, 'dim');
+</script>
+</body>
+</html>
