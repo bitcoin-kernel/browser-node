@@ -78,7 +78,7 @@ WebRTC bridge signaled by a server — pass <code>?signal=wss://your.pod/.webrtc
 Add <code>?replay=1</code> to re-watch the full genesis→tip header climb (it otherwise resumes instantly from OPFS).</p>
 
 <script type="module">
-import { connect as liveConnect, syncToTip } from './live-feed.js';
+import { connect as liveConnect, syncToTip, tail } from './live-feed.js';
 
 const $ = (id) => document.getElementById(id);
 const log = (m, c='') => { const t = new Date().toISOString().slice(11,19); $('log').innerHTML += `<span class="dim">${t}</span> <span class="${c}">${m}</span>\n`; $('log').scrollTop = $('log').scrollHeight; };
@@ -131,6 +131,14 @@ async function runHeaderFeed() {
     $('hbar').style.width = '100%'; $('hbarw').classList.add('done');
     $('hsub').textContent = (webrtc ? 'WebRTC' : 'bridge') + ': synced + validated, live';
     log(`header tip: #${fmt(tip.height)} (validated from genesis)`, 'ok');
+    // Keep pace with the tip: poll the peer; validate each new header as testnet4 mines it.
+    tail(session, { intervalMs: 8000, log, onTip: ({ height, hash, added, reorgs }) => {
+      $('htip').textContent = '#' + fmt(height);
+      $('hsub').textContent = (webrtc ? 'WebRTC' : 'bridge') + `: following the tip · +${added}`;
+      log(`new block: header tip → #${fmt(height)} (${hash.slice(0, 16)}…)`, 'ok');
+      if (reorgs && reorgs.length) log(`reorg handled while following (${reorgs.length})`, 'warn');
+    } });
+    log('following the tip — new headers validate as the network mines them', 'dim');
   } catch (e) {
     $('htip').textContent = 'offline';
     $('hsub').innerHTML = webrtc ? '<span class="warn">signaling/bridge unreachable</span>' : '<span class="warn">run node bridge.mjs</span>';
