@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>bitcoin-kernel/browser-node — following the tip (testnet4)</title>
+<style>
+  :root { --bg:#fff; --fg:#16181d; --mut:#5b6470; --bd:#e6e8eb; --pan:#fafbfc; --ac:#e8830c; --ac2:#0969da; --good:#1a7f37; --bad:#cf222e; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; color-scheme:light; }
+  body { background:var(--bg); color:var(--fg); font:14px/1.5 var(--mono); max-width:760px; margin:24px auto; padding:0 16px; }
+  h1 { font-size:18px; } a { color:var(--ac2); }
+  button { background:var(--pan); color:var(--fg); border:1px solid var(--bd); border-radius:6px; padding:9px 16px; cursor:pointer; font:inherit; }
+  button:hover { background:#f0f2f4; border-color:var(--ac); } button:disabled { opacity:.45; cursor:default; }
+  .grid { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin:14px 0; }
+  .card { border:1px solid var(--bd); border-radius:8px; padding:10px 12px; background:var(--pan); }
+  .card .k { color:var(--mut); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+  .card .v { font-size:22px; color:var(--fg); margin-top:3px; }
+  .card .s { color:var(--mut); font-size:12px; margin-top:2px; }
+  #status { border:1px solid var(--bd); border-radius:6px; padding:8px 12px; background:var(--pan); }
+  #log { background:var(--pan); border:1px solid var(--bd); border-radius:6px; padding:12px; height:200px; overflow:auto; white-space:pre-wrap; margin-top:12px; }
+  .ok{color:var(--good)} .warn{color:var(--ac)} .err{color:var(--bad)} .dim{color:var(--mut)}
+  .dot{ display:inline-block; width:9px; height:9px; border-radius:50%; background:var(--mut); margin-right:6px; vertical-align:middle; }
+  .dot.live{ background:var(--good); animation:pulse 2s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.35} }
+  .flash{ animation:flash .9s ease-out; }
+  @keyframes flash { from{background:#fff3e0} to{background:var(--pan)} }
+</style>
+</head>
+<body>
+<h1>bitcoin-kernel / browser-node — following the tip <span class="dim">(testnet4)</span></h1>
+<p class="dim">This page <b>follows the live testnet4 header tip</b>. It syncs headers to the current tip, then keeps watching —
+each time the network mines a block, the new <b>header is validated</b> (proof-of-work, BIP94 difficulty, linkage) and the
+tip advances, right here in the tab. Reorgs are handled. <a href="node.html">the running node</a> · <a href="index.html">the acts</a>
+<br><span class="dim">Scope: this validates the <b>header</b> chain, not full blocks (scripts/signatures need the full UTXO set — the 25 GB wall). It follows the tip; it doesn't fully validate each new block's transactions.</span></p>
+
+<p><button id="start">▶ Follow the tip</button> <span id="status" class="dim">idle</span></p>
+
+<div class="grid">
+  <div class="card"><div class="k"><span class="dot" id="dot"></span>header tip (live)</div><div class="v" id="tip">—</div><div class="s" id="tiphash">—</div></div>
+  <div class="card"><div class="k">network tip (peer)</div><div class="v" id="peertip">—</div><div class="s" id="behind">—</div></div>
+  <div class="card"><div class="k">new blocks since open</div><div class="v" id="new">0</div><div class="s" id="lastnew">—</div></div>
+  <div class="card"><div class="k">last checked</div><div class="v" id="checked">—</div><div class="s">polls the peer every 8s</div></div>
+  <div class="card"><div class="k">reorgs handled</div><div class="v" id="reorgs">0</div><div class="s">most-work chain</div></div>
+  <div class="card"><div class="k">transport</div><div class="v" id="transport">—</div><div class="s" id="peer">—</div></div>
+</div>
+<div id="log"></div>
+
+<p class="dim" style="margin-top:14px; border-top:1px solid var(--bd); padding-top:10px">
+Needs a bridge to a testnet4 peer (browsers can't open raw TCP): the local WS bridge
+(<code>node bridge.mjs</code>, default), or a WebRTC bridge — pass
+<code>?signal=wss://your.pod/.webrtc&amp;room=&lt;hex&gt;</code> (<code>node bridge-webrtc.mjs</code> on the other end).</p>
+
+<script type="module">
+import { connect as liveConnect, syncToTip, tail } from './live-feed.js';
+
+const $ = (id) => document.getElementById(id);
+const log = (m, c='') => { const t = new Date().toISOString().slice(11,19); $('log').innerHTML += `<span class="dim">${t}</span> <span class="${c}">${m}</span>\n`; $('log').scrollTop = $('log').scrollHeight; };
+const fmt = (n) => Number(n).toLocaleString();
+const setStatus = (m, c='') => $('status').innerHTML = `<span class="${c}">${m}</span>`;
+const ago = (ms) => { const s = Math.round((Date.now() - ms) / 1000); if (s < 60) return s + 's ago'; const m = Math.round(s / 60); return m < 60 ? m + 'm ago' : Math.round(m / 60) + 'h ago'; };
+
+let lastNewAt = null, lastCheckAt = null;
+function showTip(tip, peerTip) {
+  $('tip').textContent = '#' + fmt(tip.height);
+  $('tiphash').textContent = tip.hash.slice(0, 24) + '…';
+  if (peerTip) { $('peertip').textContent = '#' + fmt(peerTip); const d = peerTip - tip.height; $('behind').textContent = d <= 0 ? 'at the tip' : d + ' behind'; }
+}
+
+$('start').onclick = async () => {
+  $('start').disabled = true;
+  const q = new URLSearchParams(location.search);
+  const signalUrl = q.get('signal'), room = q.get('room'), bridgeUrl = q.get('bridge') || 'ws://localhost:8334';
+  const webrtc = !!signalUrl;
+  $('transport').textContent = webrtc ? 'WebRTC' : 'WS bridge';
+  try {
+    setStatus('connecting to a testnet4 peer…', 'warn');
+    log(`connecting (${webrtc ? 'WebRTC signaling ' + signalUrl : 'WS bridge ' + bridgeUrl})…`);
+    const jl = (n) => fetch(`./engine/schema/${n}.jsonld`).then(r => r.json());
+    const [core, proof, p2p, chain, validate] = await Promise.all(['core','proof','p2p','chain','validate'].map(jl));
+    const vectors = await (await fetch('./data/testnet4.json')).json();
+    const session = await liveConnect({ bridgeUrl, signalUrl, room, schemas: { core, proof, p2p, chain, validate }, vectors, log, persist: true });
+    const peerTip = session.peer?.peerVersion?.startHeight || 0;
+    $('peer').textContent = session.peer?.peerVersion?.userAgent || 'peer';
+    if (session.resumedFrom) { log(`resumed ${fmt(session.resumedFrom)} headers from OPFS`, 'ok'); showTip(session.store.tip(), peerTip); }
+
+    setStatus('syncing headers to the tip…', 'warn');
+    await syncToTip(session, { onBatch: ({ tip, reorg }) => { showTip(tip, peerTip); if (reorg) { $('reorgs').textContent = fmt((+$('reorgs').textContent.replace(/,/g,'')) + 1); log(`reorg: rolled back ${reorg.depth} at #${fmt(reorg.atHeight)}`, 'warn'); } } });
+    const tip0 = session.store.tip();
+    showTip(tip0, peerTip);
+    $('dot').classList.add('live');
+    setStatus(`● following the tip — validating each new header as it arrives`, 'ok');
+    log(`at the tip: #${fmt(tip0.height)} (${tip0.hash.slice(0,16)}…) — now watching for new blocks`, 'ok');
+
+    // heartbeat: show "last checked … / last new block …" between polls
+    lastCheckAt = Date.now();
+    setInterval(() => { if (lastCheckAt) $('checked').textContent = ago(lastCheckAt); if (lastNewAt) $('lastnew').textContent = 'last block ' + ago(lastNewAt); }, 1000);
+
+    // follow: tail() polls the peer; each new block validates its header and advances the tip
+    let total = 0;
+    tail(session, { intervalMs: 8000, log, onTip: ({ height, hash, added, reorgs }) => {
+      lastCheckAt = Date.now(); lastNewAt = Date.now();
+      total += (added || 1);
+      $('new').textContent = fmt(total);
+      showTip({ height, hash }, peerTip);
+      $('tip').classList.remove('flash'); void $('tip').offsetWidth; $('tip').classList.add('flash');
+      if (reorgs && reorgs.length) { $('reorgs').textContent = fmt((+$('reorgs').textContent.replace(/,/g,'')) + reorgs.length); log(`reorg handled while following (${reorgs.length})`, 'warn'); }
+      log(`new block: tip → #${fmt(height)} (${hash.slice(0,16)}…)${added > 1 ? ` (+${added})` : ''}`, 'ok');
+    } });
+    // mark each poll time even when no new block (tail doesn't expose empty polls, so approximate)
+    setInterval(() => { lastCheckAt = Date.now(); }, 8000);
+  } catch (e) {
+    $('dot').classList.remove('live');
+    setStatus('offline: ' + e.message, 'err');
+    log('could not follow the tip: ' + e.message + (q.get('signal') ? ' — WebRTC bridge unreachable' : ' — run node bridge.mjs'), 'err');
+    $('start').disabled = false;
+  }
+};
+
+log('idle — press ▶ Follow the tip. Needs a bridge (?signal=… for WebRTC, or run node bridge.mjs).', 'dim');
+</script>
+</body>
+</html>
