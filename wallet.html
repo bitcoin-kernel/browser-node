@@ -41,6 +41,7 @@ This page <b>signs and broadcasts</b> — the signed transaction is announced to
 
 <h2>2 · Spend</h2>
 <fieldset id="spendBox" disabled>
+  <label>funding address — which of your addresses holds this UTXO (auto-found among your first 20)</label><input id="fundAddr" spellcheck="false" placeholder="tb1q… (defaults to your 0/0)">
   <div class="row">
     <div><label>UTXO txid</label><input id="utxoTxid" spellcheck="false" placeholder="funding transaction id"></div>
     <div style="flex:0 0 90px"><label>vout</label><input id="utxoVout" inputmode="numeric" value="0"></div>
@@ -56,7 +57,8 @@ This page <b>signs and broadcasts</b> — the signed transaction is announced to
 <div id="out"></div>
 
 <p class="dim" style="margin-top:18px; border-top:1px solid var(--bd); padding-top:10px">
-Signs the input at <code>m/84'/1'/0'/0/0</code> (P2WPKH, BIP143). Change returns to the same <code>0/0</code> address.
+Signs the input at whichever <code>m/84'/1'/0'/{0,1}/i</code> address holds the UTXO — it searches your first 20 receiving
+and change addresses for the funding address and uses that key (P2WPKH, BIP143). Change returns to the funding address.
 The signature is produced by the bundled WASM secp and the finished transaction is checked by the node's own
 <code>ScriptInterpreter.verifyInput</code> before display — the same code path that validates blocks. Broadcast announces the
 tx to a real testnet4 peer over the bridge (<code>inv</code> → <code>getdata</code> → <code>tx</code>) and reads back whether
@@ -76,8 +78,21 @@ const $ = (id) => document.getElementById(id);
 const q = new URLSearchParams(location.search);
 const signalUrl = q.get('signal') || 'wss://melvincarvalho.com/.webrtc';
 const bridgeRoom = q.get('bridgeRoom') || 'b17c0192abad1deacafe';
-let codec = null, se = null, interp = null, key = null, myScriptPubKey = null;
+let codec = null, se = null, interp = null, seed = null;
 let schemas = null, vectors = null, signedTx = null;
+const GAP = 20;   // how many indices to search per chain when locating the funding address
+
+// derive (key, scriptPubKey, address) for one BIP84 index — the same derivation keys.html shows
+function at(change, index) {
+  const key = deriveSigningKey(seed, { coin: 1, change, index });
+  const scriptPubKey = '0014' + bytesToHex(hash160(key.pub));
+  return { key, scriptPubKey, address: se.classify(scriptPubKey).address, change, index };
+}
+// find which of the wallet's first GAP receiving/change addresses equals targetAddr
+function findKeyForAddress(targetAddr) {
+  for (const change of [0, 1]) for (let i = 0; i < GAP; i++) { const e = at(change, i); if (e.address === targetAddr) return e; }
+  return null;
+}
 
 async function loadEngine() {
   const jl = (n) => fetch(`./engine/schema/${n}.jsonld`).then(r => r.json());
@@ -93,12 +108,13 @@ async function loadWallet() {
   const m = $('mnemonic').value.trim().toLowerCase().split(/\s+/).filter(Boolean).join(' ');
   const words = m ? m.split(' ').length : 0;
   if (![12, 15, 18, 21, 24].includes(words)) { $('loadStatus').innerHTML = '<span class="err">expects a 12/15/18/21/24-word BIP39 mnemonic</span>'; return; }
-  const seed = await mnemonicToSeed(m, '');
-  key = deriveSigningKey(seed, { coin: 1, change: 0, index: 0 });   // m/84'/1'/0'/0/0, with private key
-  myScriptPubKey = '0014' + bytesToHex(hash160(key.pub));
-  const address = se.classify(myScriptPubKey).address;
+  seed = await mnemonicToSeed(m, '');
+  let rows = '';
+  for (let i = 0; i < 5; i++) { const e = at(0, i); rows += `<tr><td>0/${i}</td><td class="addr">${e.address}</td></tr>`; }
   $('wallet').innerHTML =
-    `<div class="field"><div class="k">your receiving address (0/0) — fund this on testnet4, then spend below</div><div class="v">${address}</div></div>`;
+    `<div class="field"><div class="k">your receiving addresses — fund one on testnet4, then spend it below</div>` +
+    `<table style="border-collapse:collapse;width:100%"><tr><th style="width:70px;border:1px solid var(--bd);padding:6px 9px">path</th><th style="border:1px solid var(--bd);padding:6px 9px">address (P2WPKH)</th></tr>${rows}</table></div>`;
+  $('fundAddr').value = at(0, 0).address;   // default the spend to 0/0
   $('spendBox').disabled = false;
   $('loadStatus').innerHTML = '<span class="ok">✓ wallet loaded (key in this tab only)</span>';
 }
@@ -106,7 +122,10 @@ async function loadWallet() {
 function buildAndSign() {
   $('out').innerHTML = ''; $('buildStatus').textContent = '';
   try {
-    if (!key) throw new Error('load a wallet first');
+    if (!seed) throw new Error('load a wallet first');
+    const fundAddr = $('fundAddr').value.trim();
+    const utxo = findKeyForAddress(fundAddr);
+    if (!utxo) throw new Error(`funding address not found among your first ${GAP} receiving/change addresses — is it from this wallet?`);
     const txid = $('utxoTxid').value.trim().toLowerCase();
     const vout = parseInt($('utxoVout').value, 10);
     const utxoValue = parseInt($('utxoValue').value, 10);
@@ -122,30 +141,31 @@ function buildAndSign() {
     if (change < 0) throw new Error(`amount + fee (${amount + fee}) exceeds the UTXO value (${utxoValue})`);
 
     const outputs = [{ value: amount, scriptPubKey: destScript }];
-    if (change > 0) outputs.push({ value: change, scriptPubKey: myScriptPubKey });   // change back to 0/0
+    if (change > 0) outputs.push({ value: change, scriptPubKey: utxo.scriptPubKey });   // change back to the funding address
     const tx = {
       version: 2, marker: 0, flag: 1,
       inputs: [{ prevout: { txid, vout }, scriptSig: '', sequence: 0xffffffff }],
       outputs, witness: [[]], lockTime: 0,
     };
 
-    // BIP143 sighash over the implied P2PKH scriptCode → sign → witness [sig+SIGHASH_ALL, pubkey]
-    const scriptCode = '76a914' + bytesToHex(hash160(key.pub)) + '88ac';
+    // BIP143 sighash over the implied P2PKH scriptCode → sign with the funding key → witness [sig+SIGHASH_ALL, pubkey]
+    const scriptCode = '76a914' + bytesToHex(hash160(utxo.key.pub)) + '88ac';
     const sighash = interp.sighashWitnessV0(tx, 0, scriptCode, utxoValue, 0x01);
-    tx.witness[0] = [bytesToHex(toDer(signEcdsa(sighash, key.priv))) + '01', bytesToHex(key.pub)];
+    tx.witness[0] = [bytesToHex(toDer(signEcdsa(sighash, utxo.key.priv))) + '01', bytesToHex(utxo.key.pub)];
 
     // verify against the node's OWN verifier before showing anything
-    const prevout = { scriptPubKey: myScriptPubKey, value: utxoValue };
+    const prevout = { scriptPubKey: utxo.scriptPubKey, value: utxoValue };
     const r = interp.verifyInput(tx, 0, prevout, [prevout]);
     if (r.ok !== true) throw new Error('engine rejected the signed input: ' + JSON.stringify(r));
     const rawHex = codec.encodeHex('Transaction', tx);
     const finalTxid = codec.txid(tx);
 
     signedTx = tx;
-    const changeLine = change > 0 ? `<tr><td class="dim">change → your 0/0</td><td>${change} sats</td></tr>` : `<tr><td class="dim">change</td><td>none</td></tr>`;
+    const chain = utxo.change ? '1' : '0';
+    const changeLine = change > 0 ? `<tr><td class="dim">change → your ${chain}/${utxo.index}</td><td>${change} sats</td></tr>` : `<tr><td class="dim">change</td><td>none</td></tr>`;
     $('out').innerHTML =
       `<div class="field"><div class="k">✓ verified — signed transaction (${rawHex.length / 2} bytes)</div>` +
-      `<table style="border-collapse:collapse;width:100%;margin:6px 0"><tr><td class="dim" style="width:140px">to ${dest.slice(0, 12)}…</td><td>${amount} sats</td></tr>${changeLine}<tr><td class="dim">fee</td><td>${fee} sats</td></tr></table></div>` +
+      `<table style="border-collapse:collapse;width:100%;margin:6px 0"><tr><td class="dim" style="width:140px">from ${chain}/${utxo.index}</td><td>${fundAddr.slice(0, 16)}… (${utxoValue} sats)</td></tr><tr><td class="dim">to ${dest.slice(0, 12)}…</td><td>${amount} sats</td></tr>${changeLine}<tr><td class="dim">fee</td><td>${fee} sats</td></tr></table></div>` +
       `<div class="field"><div class="k">txid</div><div class="v">${finalTxid}</div></div>` +
       `<div class="field secret"><div class="k">raw transaction — or broadcast it below, or paste into any testnet4 node / explorer</div><div class="v">${rawHex}</div></div>` +
       `<p style="margin-top:10px"><button id="bcast">▶ Broadcast to testnet4</button> <span id="bcastStatus" class="dim"></span></p>` +
