@@ -29,18 +29,21 @@ async function init() {
   return { ready: true };
 }
 
-async function followRange() {
+async function followRange({ n } = {}) {
   snap = new ShardedUtxo(64);
   const seed = await (await fetch('data/range-seed.ndjson')).text();
   let first = true;
   for (const l of seed.split('\n')) { if (!l) continue; if (first) { first = false; continue; } const [k, v] = JSON.parse(l); snap.set(k, v); }
   const start = snap.size;
-  const range = await (await fetch('data/range.json')).json();
+  const all = await (await fetch('data/range.json')).json();
+  const available = all.blocks.length;
+  const count = Math.max(1, Math.min(n || available, available));   // ?blocks= knob; default (no n) = the full bundled window
+  const range = { start: all.start, end: all.start + count - 1, blocks: all.blocks.slice(0, count) };
   const total = range.blocks.length;
   const t0 = performance.now();
   const r = await followChain({ range, codec, be, snap, coinview: coinviewOf(snap),
     onBlock: (b) => self.postMessage({ progress: 'block', height: b.height, ok: b.ok, txs: b.txs, inputs: b.inputs, utxoSize: b.utxoSize, ms: b.ms, total }) });
-  return { validated: r.validated, total: r.total, utxoStart: start, utxoEnd: snap.size, start: range.start, end: range.end, ms: performance.now() - t0 };
+  return { validated: r.validated, total: r.total, utxoStart: start, utxoEnd: snap.size, start: range.start, end: range.end, ms: performance.now() - t0, available };
 }
 
 // SwiftSync set-consistency over the same range: a constant 32-byte accumulator

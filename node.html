@@ -69,13 +69,13 @@ const setStatus = (m, c='') => $('status').innerHTML = `<span class="${c}">${m}<
 
 // ── worker RPC with progress events ──
 let _w = null, _id = 0; const _rpc = new Map(); let _onProgress = null;
-function wcall(cmd) {
+function wcall(cmd, args) {
   if (!_w) {
     _w = new Worker('node-worker.js', { type: 'module' });
     _w.onmessage = (e) => { const d = e.data; if (d.progress) { _onProgress && _onProgress(d); return; } const p = _rpc.get(d.id); if (!p) return; _rpc.delete(d.id); d.ok ? p.resolve(d.result) : p.reject(new Error(d.error)); };
     _w.onerror = (e) => log('worker error: ' + (e.message || e.filename), 'err');
   }
-  const id = ++_id; _w.postMessage({ id, cmd });
+  const id = ++_id; _w.postMessage({ id, cmd, args });
   return new Promise((res, rej) => _rpc.set(id, { resolve: res, reject: rej }));
 }
 
@@ -150,15 +150,16 @@ $('start').onclick = async () => {
       setStatus(`validating forward — block #${fmt(b.height)}${total ? ` (${n}/${total})` : ''}…`, 'warn');
     };
     let done = false;
-    const followP = wcall('followRange');
+    const blocksParam = parseInt(new URLSearchParams(location.search).get('blocks'), 10);   // ?blocks=N knob
+    const followP = wcall('followRange', { n: Number.isFinite(blocksParam) ? blocksParam : undefined });
     followP.then(() => { done = true; }, () => { done = true; });   // resolve drain even if validation errors
     await new Promise((resolve) => { const iv = setInterval(() => { if (queue.length) render(queue.shift()); else if (done) { clearInterval(iv); resolve(); } }, 120); });
     const r = await followP;
     _onProgress = null;
     $('vbar').style.width = '100%'; $('vbarw').classList.add('done');
     $('vheight').textContent = '#' + fmt(r.end);
-    $('vsub').innerHTML = `<span class="ok">✓ window #${fmt(r.start)}–${fmt(r.end)} fully checked</span> — full scripts &amp; sigs (full set is memory-bound)`;
-    log(`validated forward #${fmt(r.start)}→#${fmt(r.end)}: ${fmt(r.validated)}/${fmt(r.total)} blocks, UTXO ${fmt(r.utxoStart)}→${fmt(r.utxoEnd)} in ${r.ms.toFixed(0)}ms (worker, WASM secp)`, 'ok');
+    $('vsub').innerHTML = `<span class="ok">✓ ${fmt(r.validated)}-block window #${fmt(r.start)}–${fmt(r.end)}</span> · resize with ?blocks=N (1–${fmt(r.available)})`;
+    log(`validated forward #${fmt(r.start)}→#${fmt(r.end)}: ${fmt(r.validated)}/${fmt(r.total)} blocks, UTXO ${fmt(r.utxoStart)}→${fmt(r.utxoEnd)} in ${r.ms.toFixed(0)}ms (worker, WASM secp) · window size = ?blocks=N (1–${fmt(r.available)})`, 'ok');
 
     const ck = await wcall('checkpoint');
     $('ckpt').textContent = (ck.bytes/1048576).toFixed(2) + ' MB';
