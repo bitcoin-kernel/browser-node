@@ -74,7 +74,7 @@ engine (used inside the worker). Pure-JS fallback exists.
 | `how-it-works.html` | ✅ | Narrative blog post with SVG diagrams. |
 | `keys.html` | ✅ | **Generate or import a testnet4 wallet** — the one page with private keys. A 12-word **BIP39** mnemonic (generate, or import from any wallet) → private/hardened BIP32 (WASM secp `pointFromScalar`/`privateAdd`) → account **tpub** + receiving addresses. Throwaway/testnet; keys live only in-tab. |
 | `spv.html` | 🟡 | **Watch-only SPV wallet.** ① derive receiving addresses from an xpub/tpub (`Bip32`); ② **SPV merkle-proof** inclusion (`SpvEngine`, BIP37 proof built from a block); ③ **scan** the chain (full-block, over the bridge) for payments → UTXOs + balance. No private keys. |
-| `wallet.html` | 🟡 | **Sign a testnet4 spend.** Load a BIP39 mnemonic → `deriveSigningKey` (private `m/84'/1'/0'/0/0`) → build a P2WPKH spend (UTXO + destination + amount + fee, change back to `0/0`) → BIP143 sighash → WASM secp ECDSA sign → **verified against the node's own `ScriptInterpreter.verifyInput` before display** → raw broadcast hex + txid. **Signs but does not broadcast yet** (next slice). Keys live only in-tab. |
+| `wallet.html` | 🟡 | **Sign + broadcast a testnet4 spend.** Load a BIP39 mnemonic → `deriveSigningKey` (private `m/84'/1'/0'/0/0`) → build a P2WPKH spend (UTXO + destination + amount + fee, change back to `0/0`) → BIP143 sighash → WASM secp ECDSA sign → **verified against the node's own `ScriptInterpreter.verifyInput` before display** → raw hex + txid → **Broadcast** announces it to a real testnet4 peer over the bridge (`inv`→`getdata`→`tx`, then re-`getdata` reads mempool accept/reject). Keys live only in-tab. UTXO still hand-entered (next: pull from the spv.html scan). |
 
 **URL params (shared):** `?signal=wss://<pod>/.webrtc` (WebRTC signaling) · `?room=<hex>`
 (`[a-f0-9]{8,128}`) · `?bridge=ws://host:8334` (WS bridge) · `?replay=1` (node/fullnode: re-watch
@@ -94,6 +94,9 @@ the genesis→tip header climb) · mesh `?bridgeRoom=<hex>` (the seed's network 
   but the sender (gossip); `sendToOne()` for gossip mode; `onPeers(count)` reports the live count.
 - **`live-feed.js`** — `connect({bridgeUrl | signalUrl, room, schemas, vectors, persist})` picks
   WsPeer vs RtcPeer; `syncToTip` (one-shot), `tail` (follow + reorgs).
+- **`broadcast.js`** — `broadcastTx(peer, tx, codec)`: announce a signed tx (`inv`), serve it on
+  `getdata`, then re-query to read mempool accept (`tx`) vs reject (`notfound`). Transport-agnostic
+  (any `send`/`waitFor` peer); used by wallet.html, proven in `test-broadcast.mjs`.
 - **`node-worker.js`** — Web Worker validation core. RPC handlers: `init, followRange, checkpoint,
   resume, swiftsync, scaleAccumulate, swiftsyncHints, fullchain, verifySnapshot`.
 - **`validate-forward.js`** (`loadEngine`, `coinviewOf`), **`follow-chain.js`** (`applyBlock`,
@@ -146,7 +149,9 @@ use **non-trickle ICE** (candidates bundled into the SDP). See `memory: jss-webr
 relay), `test-paginate.mjs` (getheaders pagination to 5000), `test-mesh-npeer.mjs` (3-peer full mesh +
 broadcast), `test-mesh-multihop.mjs` (A→B→C line, multi-hop), `test-mesh-gossip.mjs` (full mesh,
 source→one→all via gossip), `test-cfilter-probe.mjs` (BIP157 service probe), `test-scan.mjs` (wallet
-scan finds a watched output over the network), `live-node-test.mjs`. **Wallet crypto tests** (no
+scan finds a watched output over the network), `test-broadcast.mjs` (announce a signed tx to a real
+peer → it requests via `getdata` → send `tx` → re-`getdata` reads accept/reject; unfunded ⇒ `notfound`),
+`live-node-test.mjs`. **Wallet crypto tests** (no
 network): `test-spv-derive.mjs` (address derivation vs BIP84), `test-spv-proof.mjs` (SPV merkle
 proof vs a real block), `test-keygen.mjs` (private BIP32 vs BIP32 vector 1), `test-bip39.mjs`
 (BIP39 generate + import vs the vectors), `test-sign.mjs` (build+sign a P2WPKH input → engine
@@ -195,13 +200,15 @@ vectors/peers, and a network-agnostic bridge target.
 **Wallet — built (keygen + watch-only + signing):** `keys.html` (BIP39 generate/import → tpub,
 `wasm-keygen.js`), `spv.html` (① derive · ② SPV merkle-proof via `SpvEngine` · ③ chain scan → balance,
 over the bridge), and `wallet.html` (load mnemonic → P2WPKH spend → BIP143 sighash → WASM ECDSA sign →
-verified by the node's own `verifyInput` → raw broadcast hex; the signing key's `0/0` == spv.html's
-watch-only `0/0`, so what you fund is what you spend). Naming: `keys.html` = keys, `spv.html` =
-watch-only, `wallet.html` = spending. Honest gaps: no compact-filter/bloom peer reachable
-(`test-cfilter-probe.mjs`: services `0xc09`), so scanning is full-block (cheap for a recent range) and
-SPV proofs are self-built; generating a mnemonic needs the bundled wordlist (`data/bip39-english.txt`).
-**Next: broadcast** — push the signed `tx` over the bridge (then multi-UTXO coin selection, PSBT in
-`wallet.js`, Schnorr/P2TR via the WASM secp's `signSchnorr`).
+verified by the node's own `verifyInput` → **broadcast** to a real peer over the bridge via `broadcast.js`;
+the signing key's `0/0` == spv.html's watch-only `0/0`, so what you fund is what you spend). Naming:
+`keys.html` = keys, `spv.html` = watch-only, `wallet.html` = spending. Honest gaps: no compact-filter/bloom
+peer reachable (`test-cfilter-probe.mjs`: services `0xc09`), so scanning is full-block (cheap for a recent
+range) and SPV proofs are self-built; generating a mnemonic needs the bundled wordlist
+(`data/bip39-english.txt`); broadcast confirms mempool entry by re-querying (`inv`→`getdata`→`tx`→`getdata`),
+proven against a live node with an unfunded tx (`notfound`) — an accepted broadcast needs faucet funds.
+**Next: close the loop** — pull spendable UTXOs from the spv.html scan into wallet.html (drop the
+hand-entered UTXO), then multi-UTXO coin selection, PSBT in `wallet.js`, Schnorr/P2TR via `signSchnorr`.
 `engine/codec/filters.js` (BIP158) and `nostr.js` remain unwired.
 
 **Propagation (mesh) — done:** N-peer full mesh · gossip forwarding (seen-set) · visible multi-hop

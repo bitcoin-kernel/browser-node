@@ -32,7 +32,7 @@ node's own BIP143 verifier before you ever see it. <a href="how-it-works.html">h
 
 <div class="warn-box dim">
 ⚠ <b>Testnet4 only — throwaway.</b> Your mnemonic is your wallet; it stays in this tab and vanishes on reload.
-This slice <b>signs but does not broadcast</b> — copy the raw transaction and push it with any testnet4 node / explorer, or wait for the broadcast slice.</div>
+This page <b>signs and broadcasts</b> — the signed transaction is announced to a real testnet4 peer over the bridge. You can also copy the raw hex and push it elsewhere.</div>
 
 <h2>1 · Load wallet</h2>
 <input id="mnemonic" spellcheck="false" placeholder="twelve word BIP39 mnemonic …">
@@ -58,8 +58,10 @@ This slice <b>signs but does not broadcast</b> — copy the raw transaction and 
 <p class="dim" style="margin-top:18px; border-top:1px solid var(--bd); padding-top:10px">
 Signs the input at <code>m/84'/1'/0'/0/0</code> (P2WPKH, BIP143). Change returns to the same <code>0/0</code> address.
 The signature is produced by the bundled WASM secp and the finished transaction is checked by the node's own
-<code>ScriptInterpreter.verifyInput</code> before display — the same code path that validates blocks. Proven end-to-end in
-<code>test-sign.mjs</code> / <code>test-wallet.mjs</code>. Next: broadcast over the bridge, multi-UTXO coin selection.</p>
+<code>ScriptInterpreter.verifyInput</code> before display — the same code path that validates blocks. Broadcast announces the
+tx to a real testnet4 peer over the bridge (<code>inv</code> → <code>getdata</code> → <code>tx</code>) and reads back whether
+it entered the mempool. Proven end-to-end in <code>test-sign.mjs</code> / <code>test-wallet.mjs</code> /
+<code>test-broadcast.mjs</code>. Next: pull UTXOs from the spv.html scan, multi-UTXO coin selection.</p>
 
 <script type="module">
 import { mnemonicToSeed, deriveSigningKey, signEcdsa, toDer } from './wasm-keygen.js';
@@ -67,16 +69,24 @@ import { Codec } from './engine/codec/codec.js';
 import { ScriptEngine, addressToScript } from './engine/codec/script.js';
 import { ScriptInterpreter } from './engine/codec/interpreter.js';
 import { hash160, bytesToHex } from './engine/codec/hash.js';
+import { connect as liveConnect } from './live-feed.js';
+import { broadcastTx } from './broadcast.js';
 
 const $ = (id) => document.getElementById(id);
+const q = new URLSearchParams(location.search);
+const signalUrl = q.get('signal') || 'wss://melvincarvalho.com/.webrtc';
+const bridgeRoom = q.get('bridgeRoom') || 'b17c0192abad1deacafe';
 let codec = null, se = null, interp = null, key = null, myScriptPubKey = null;
+let schemas = null, vectors = null, signedTx = null;
 
 async function loadEngine() {
   const jl = (n) => fetch(`./engine/schema/${n}.jsonld`).then(r => r.json());
-  const [script, chain, core, proof, p2p] = await Promise.all(['script','chain','core','proof','p2p'].map(jl));
+  const [script, chain, core, proof, p2p, validate] = await Promise.all(['script','chain','core','proof','p2p','validate'].map(jl));
   se = ScriptEngine.fromSchemas(script, chain, 'btc:testnet4');
   codec = new Codec(core, proof, p2p);
   interp = new ScriptInterpreter(codec, se);
+  schemas = { core, proof, p2p, chain, validate };
+  vectors = await fetch('./data/testnet4.json').then(r => r.json());
 }
 
 async function loadWallet() {
@@ -131,15 +141,46 @@ function buildAndSign() {
     const rawHex = codec.encodeHex('Transaction', tx);
     const finalTxid = codec.txid(tx);
 
+    signedTx = tx;
     const changeLine = change > 0 ? `<tr><td class="dim">change → your 0/0</td><td>${change} sats</td></tr>` : `<tr><td class="dim">change</td><td>none</td></tr>`;
     $('out').innerHTML =
       `<div class="field"><div class="k">✓ verified — signed transaction (${rawHex.length / 2} bytes)</div>` +
       `<table style="border-collapse:collapse;width:100%;margin:6px 0"><tr><td class="dim" style="width:140px">to ${dest.slice(0, 12)}…</td><td>${amount} sats</td></tr>${changeLine}<tr><td class="dim">fee</td><td>${fee} sats</td></tr></table></div>` +
       `<div class="field"><div class="k">txid</div><div class="v">${finalTxid}</div></div>` +
-      `<div class="field secret"><div class="k">raw transaction — broadcast with any testnet4 node / explorer (broadcast slice coming)</div><div class="v">${rawHex}</div></div>`;
+      `<div class="field secret"><div class="k">raw transaction — or broadcast it below, or paste into any testnet4 node / explorer</div><div class="v">${rawHex}</div></div>` +
+      `<p style="margin-top:10px"><button id="bcast">▶ Broadcast to testnet4</button> <span id="bcastStatus" class="dim"></span></p>` +
+      `<div id="bcastOut"></div>`;
+    $('bcast').onclick = broadcast;
     $('buildStatus').innerHTML = '<span class="ok">✓ signed &amp; verified under the node BIP143</span>';
   } catch (e) {
     $('buildStatus').innerHTML = `<span class="err">${e.message}</span>`;
+  }
+}
+
+// Broadcast over the bridge: connect to a real testnet4 peer, announce + send the
+// tx, and read back whether it entered the mempool. Same broadcast.js proven in
+// test-broadcast.mjs against a live node.
+async function broadcast() {
+  if (!signedTx) return;
+  $('bcast').disabled = true; $('bcastOut').innerHTML = '';
+  $('bcastStatus').innerHTML = '<span class="dim">connecting to a testnet4 peer over the bridge…</span>';
+  let session = null;
+  try {
+    session = await liveConnect({ signalUrl, room: bridgeRoom, schemas, vectors, log: (m) => { $('bcastStatus').innerHTML = `<span class="dim">${m}</span>`; } });
+    $('bcastStatus').innerHTML = '<span class="dim">handshake complete — announcing transaction…</span>';
+    const r = await broadcastTx(session.peer, signedTx, codec);
+    if (r.accepted === true)
+      $('bcastOut').innerHTML = `<div class="field"><div class="k ok">✓ accepted into the peer's mempool</div><div class="v">txid ${r.txid}<br>The peer requested the tx and served it back — it is now relaying across testnet4.</div></div>`;
+    else if (r.requested && r.accepted === false)
+      $('bcastOut').innerHTML = `<div class="field"><div class="k err">✗ peer requested it, then rejected it (${r.detail})</div><div class="v">The transaction reached the peer but was not admitted to the mempool — usually the input is already spent, unconfirmed, or unknown to this node. Fund the 0/0 address and try a fresh UTXO.</div></div>`;
+    else
+      $('bcastOut').innerHTML = `<div class="field"><div class="k err">broadcast inconclusive</div><div class="v">${r.detail}</div></div>`;
+    $('bcastStatus').innerHTML = r.accepted === true ? '<span class="ok">✓ broadcast</span>' : '<span class="dim">done</span>';
+  } catch (e) {
+    $('bcastStatus').innerHTML = `<span class="err">broadcast failed: ${e.message}</span>`;
+  } finally {
+    try { session?.peer?.close(); } catch {}
+    $('bcast').disabled = false;
   }
 }
 
