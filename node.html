@@ -68,10 +68,15 @@ const fmt = (n) => Number(n).toLocaleString();
 const setStatus = (m, c='') => $('status').innerHTML = `<span class="${c}">${m}</span>`;
 
 // ── worker RPC with progress events ──
+// BUILD ties the worker's cache identity to this page's version: GitHub Pages
+// serves JS with max-age=600, so without this a fresh node.html could pair with
+// a stale cached node-worker.js (→ "handlers[cmd] is not a function"). Bump BUILD
+// whenever node-worker.js (or its imports) change.
+const BUILD = '20260626b';
 let _w = null, _id = 0; const _rpc = new Map(); let _onProgress = null;
 function wcall(cmd, args) {
   if (!_w) {
-    _w = new Worker('node-worker.js', { type: 'module' });
+    _w = new Worker('node-worker.js?b=' + BUILD, { type: 'module' });
     _w.onmessage = (e) => { const d = e.data; if (d.progress) { _onProgress && _onProgress(d); return; } const p = _rpc.get(d.id); if (!p) return; _rpc.delete(d.id); d.ok ? p.resolve(d.result) : p.reject(new Error(d.error)); };
     _w.onerror = (e) => log('worker error: ' + (e.message || e.filename), 'err');
   }
