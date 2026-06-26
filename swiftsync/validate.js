@@ -13,7 +13,10 @@
 import { encodeOutpoint } from './index.js';
 
 const NULL_TXID = '00'.repeat(32);
-const isOpReturn = (spk) => typeof spk === 'string' && spk.startsWith('6a'); // provably unspendable — never in the UTXO set
+// Bitcoin Core's IsUnspendable(): OP_RETURN, OR scriptPubKey > MAX_SCRIPT_SIZE
+// (10000 bytes = 20000 hex). Such outputs are never added to the chainstate /
+// dumptxoutset, so they must be excluded from the accumulator to match Core.
+const isUnspendable = (spk) => typeof spk === 'string' && (spk.startsWith('6a') || spk.length > 20000);
 
 // blocks: iterable of decoded blocks (each { transactions:[{ inputs, outputs }] }).
 // opts: { txidOf(tx)->hex, acc:Accumulator }. Returns acc.
@@ -22,7 +25,7 @@ export function applyBlocks(blocks, { txidOf, acc }) {
     for (const tx of block.transactions) {
       const txid = txidOf(tx);
       for (let v = 0; v < tx.outputs.length; v++) {
-        if (isOpReturn(tx.outputs[v].scriptPubKey)) continue; // skip OP_RETURN, like the UTXO set
+        if (isUnspendable(tx.outputs[v].scriptPubKey)) continue; // not in the UTXO set
         acc.add(encodeOutpoint({ txid, vout: v }));
       }
       for (const inp of tx.inputs) {

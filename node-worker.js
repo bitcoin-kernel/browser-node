@@ -13,6 +13,7 @@ import { encodeOutpoint } from './swiftsync/outpoint.js';
 import { generateHints, reconstructUtxo } from './swiftsync/hint.js';
 import { applyBlocks } from './swiftsync/validate.js';
 import { encodeHintsfile } from './swiftsync/hintsfile.js';
+import { DumpReader, parseHeader, coins } from './dumptxoutset.js';
 
 let codec, be;
 let snap = null;             // the worker's RAM-resident coin view
@@ -59,7 +60,7 @@ async function swiftsync() {
     for (const tx of block.transactions) {
       const txid = codec.txid(tx);
       for (const inp of tx.inputs) { if (inp.prevout.txid === NULL) continue; acc.spend(encodeOutpoint({ txid: inp.prevout.txid, vout: inp.prevout.vout })); spent++; survivors.delete(`${inp.prevout.txid}:${inp.prevout.vout}`); }
-      for (let v = 0; v < tx.outputs.length; v++) { const s = tx.outputs[v].scriptPubKey; if (typeof s === 'string' && s.startsWith('6a')) continue; acc.add(encodeOutpoint({ txid, vout: v })); created++; survivors.add(`${txid}:${v}`); }
+      for (let v = 0; v < tx.outputs.length; v++) { const s = tx.outputs[v].scriptPubKey; if (typeof s === 'string' && (s.startsWith('6a') || s.length > 20000)) continue; acc.add(encodeOutpoint({ txid, vout: v })); created++; survivors.add(`${txid}:${v}`); }
     }
   }
   for (const k of survivors) { const i = k.lastIndexOf(':'); acc.spend(encodeOutpoint({ txid: k.slice(0, i), vout: +k.slice(i + 1) })); }
@@ -146,7 +147,25 @@ async function fullchain({ to = 30000, base = 'http://localhost:8090' } = {}) {
   return { to, digest: Array.from(acc.digest()).map((b) => b.toString(16).padStart(2, '0')).join(''), mb: +(bytes / 1048576).toFixed(0), ms: performance.now() - t0 };
 }
 
-const handlers = { init, followRange, checkpoint, resume, swiftsync, scaleAccumulate, swiftsyncHints, fullchain };
+// Verify an assumeUTXO snapshot statelessly: stream a Core dumptxoutset file
+// (fetched from `url` — HTTP or a WebTorrent blob URL) through the 32-byte
+// accumulator and compare the commitment to a chain-derived value. The whole
+// 14M-coin set is processed; the set-state never exceeds 32 bytes.
+async function verifySnapshot({ url, expected } = {}) {
+  const buf = new Uint8Array(await (await fetch(url)).arrayBuffer());
+  const r = new DumpReader(buf);
+  const hdr = parseHeader(r);
+  const acc = new Accumulator({ sha256 });
+  let n = 0; const t0 = performance.now();
+  for (const c of coins(r)) {
+    acc.add(encodeOutpoint({ txid: c.txid, vout: c.vout }));
+    if ((++n & 1048575) === 0) self.postMessage({ progress: 'verify', n, total: hdr.coinsCount });
+  }
+  const digest = Array.from(acc.digest()).map((b) => b.toString(16).padStart(2, '0')).join('');
+  return { coins: n, coinsCount: hdr.coinsCount, baseHash: hdr.baseHash, netMagic: hdr.netMagic, digest, matches: expected ? digest === expected : null, mb: +(buf.length / 1048576).toFixed(0), ms: performance.now() - t0 };
+}
+
+const handlers = { init, followRange, checkpoint, resume, swiftsync, scaleAccumulate, swiftsyncHints, fullchain, verifySnapshot };
 self.onmessage = async (e) => {
   const { id, cmd, args } = e.data;
   try { self.postMessage({ id, ok: true, result: await handlers[cmd](args) }); }

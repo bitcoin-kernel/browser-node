@@ -37,7 +37,7 @@ for (const hex of range.blocks) {
       survivors.delete(`${inp.prevout.txid}:${inp.prevout.vout}`);
     }
     for (let v = 0; v < tx.outputs.length; v++) {
-      if (typeof tx.outputs[v].scriptPubKey === 'string' && tx.outputs[v].scriptPubKey.startsWith('6a')) continue; // OP_RETURN
+      const _spk = tx.outputs[v].scriptPubKey; if (typeof _spk === 'string' && (_spk.startsWith('6a') || _spk.length > 20000)) continue; // Core IsUnspendable
       acc.add(encodeOutpoint({ txid, vout: v })); created++;
       survivors.add(`${txid}:${v}`);
     }

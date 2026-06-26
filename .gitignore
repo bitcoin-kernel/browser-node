@@ -4,3 +4,4 @@ package-lock.json
 magnet.txt
 snapshot.ndjson
 .DS_Store
+data/snapshot-full.dat

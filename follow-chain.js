@@ -16,7 +16,7 @@ export function applyBlock(snap, block, height, codec) {
     }
     for (let v = 0; v < tx.outputs.length; v++) {
       const o = tx.outputs[v];
-      if (typeof o.scriptPubKey === 'string' && o.scriptPubKey.startsWith('6a')) continue; // OP_RETURN
+      if (typeof o.scriptPubKey === 'string' && (o.scriptPubKey.startsWith('6a') || o.scriptPubKey.length > 20000)) continue; // Core IsUnspendable: OP_RETURN or >10 KB
       snap.set(`${txid}:${v}`, `${o.value}\t${o.scriptPubKey}\t${height}\t${ti === 0 ? 1 : 0}`);
       created++;
     }

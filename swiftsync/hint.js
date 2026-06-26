@@ -14,13 +14,14 @@
 // Engine-agnostic: caller injects txidOf(tx).
 
 const NULL_TXID = '00'.repeat(32);
-const isOpReturn = (spk) => typeof spk === 'string' && spk.startsWith('6a');
+// Bitcoin Core IsUnspendable(): OP_RETURN or scriptPubKey > 10000 bytes (20000 hex).
+const isUnspendable = (spk) => typeof spk === 'string' && (spk.startsWith('6a') || spk.length > 20000);
 
 export function generateHints(blocks, { txidOf }) {
   const utxo = new Set();
   for (const block of blocks) for (const tx of block.transactions) {
     const txid = txidOf(tx);
-    for (let v = 0; v < tx.outputs.length; v++) if (!isOpReturn(tx.outputs[v].scriptPubKey)) utxo.add(txid + ':' + v);
+    for (let v = 0; v < tx.outputs.length; v++) if (!isUnspendable(tx.outputs[v].scriptPubKey)) utxo.add(txid + ':' + v);
     for (const inp of tx.inputs) if (inp.prevout.txid !== NULL_TXID) utxo.delete(inp.prevout.txid + ':' + inp.prevout.vout);
   }
   const blockHints = [];

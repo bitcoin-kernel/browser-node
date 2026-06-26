@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Verify the assumeUTXO snapshot — SwiftSync, in a tab</title>
+<style>
+  :root { --bg:#fff; --fg:#16181d; --mut:#5b6470; --bd:#e6e8eb; --pan:#fafbfc; --ac:#e8830c; --ac2:#0969da; --good:#1a7f37; --bad:#cf222e; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; color-scheme:light; }
+  body { background:var(--bg); color:var(--fg); font:14px/1.6 var(--mono); max-width:760px; margin:0 auto; padding:32px 18px 70px; }
+  h1 { font-size:20px; } a { color:var(--ac2); }
+  .sans { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+  button { background:var(--pan); color:var(--fg); border:1px solid var(--bd); border-radius:6px; padding:9px 15px; cursor:pointer; font:inherit; }
+  button:hover { background:#f0f2f4; border-color:var(--ac); } button:disabled { opacity:.45; cursor:default; }
+  input { font:inherit; border:1px solid var(--bd); border-radius:6px; padding:7px 9px; }
+  .grid { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin:16px 0; }
+  .card { border:1px solid var(--bd); border-radius:8px; padding:10px 12px; background:var(--pan); }
+  .card .k { color:var(--mut); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+  .card .v { font-size:20px; margin-top:3px; }
+  #bar { height:8px; background:var(--bd); border-radius:4px; overflow:hidden; margin:10px 0; }
+  #bar>i { display:block; height:100%; width:0; background:var(--good); transition:width .2s; }
+  #log { background:var(--pan); border:1px solid var(--bd); border-radius:6px; padding:12px; height:140px; overflow:auto; white-space:pre-wrap; margin-top:12px; }
+  .ok{color:var(--good)} .warn{color:var(--ac)} .err{color:var(--bad)} .dim{color:var(--mut)}
+  code{background:var(--pan);border:1px solid var(--bd);border-radius:4px;padding:1px 5px;font-size:.92em}
+</style>
+</head>
+<body>
+<h1>Verify an assumeUTXO snapshot — with 32 bytes</h1>
+<p class="dim sans">Stream a Bitcoin Core <code>dumptxoutset</code> snapshot through the SwiftSync accumulator <b>in a Web Worker</b>
+and confirm its commitment equals the one an independent full validation produces. The whole 14M-coin set is processed;
+the accumulator state never exceeds <b>32 bytes</b>. <a href="how-it-works.html">how it works</a> · <a href="index.html">the acts</a></p>
+
+<p>
+  <button id="prefix">▶ Quick check — the 1 MB prefix</button>
+  <button id="full">▶ Verify the full testnet4 snapshot (826 MB)</button>
+</p>
+<p class="dim">snapshot URL: <input id="url" size="34" value="data/utxo-prefix.dat"> expected: <input id="exp" size="20" placeholder="(commitment hex)"></p>
+<div id="bar"><i></i></div>
+<div class="grid">
+  <div class="card"><div class="k">coins streamed</div><div class="v" id="n">—</div></div>
+  <div class="card"><div class="k">data</div><div class="v" id="mb">—</div></div>
+  <div class="card"><div class="k">accumulator</div><div class="v">32 bytes</div></div>
+</div>
+<div id="verdict" class="dim">— not run yet —</div>
+<div id="log"></div>
+
+<p class="dim sans" style="margin-top:14px;border-top:1px solid var(--bd);padding-top:10px">
+The full snapshot is distributed by <b>WebTorrent</b> (the original magnet model) — point the URL at a seeded copy or a
+<code>blob:</code> from an in-page WebTorrent fetch. No bridge, no bitcoind: this runs for anyone who opens the page. The
+expected commitment comes from <code>tools/fullchain-node.mjs</code> (a full genesis→tip validation) and
+<code>tools/swiftsync-commit.mjs</code> — they agree, so a match here means this <i>is</i> the real testnet4 UTXO set.</p>
+
+<script type="module">
+const $ = (id) => document.getElementById(id);
+const log = (m, c='') => { const t = new Date().toISOString().slice(11,19); $('log').innerHTML += `<span class="dim">${t}</span> <span class="${c}">${m}</span>\n`; $('log').scrollTop = $('log').scrollHeight; };
+const fmt = (n) => Number(n).toLocaleString();
+const FULL_COMMITMENT = 'af37b01d79b0315c46c585c2d0d8804cf36b62e215dfcb13a4c9b2241e741afa';
+
+let _w = null, _id = 0; const _rpc = new Map(); let _prog = null;
+function wcall(cmd, args) {
+  if (!_w) {
+    _w = new Worker('node-worker.js', { type: 'module' });
+    _w.onmessage = (e) => { const d = e.data; if (d.progress) { _prog && _prog(d); return; } const p = _rpc.get(d.id); if (!p) return; _rpc.delete(d.id); d.ok ? p.resolve(d.result) : p.reject(new Error(d.error)); };
+    _w.onerror = (e) => log('worker error: ' + (e.message || e.filename), 'err');
+  }
+  const id = ++_id; _w.postMessage({ id, cmd, args });
+  return new Promise((res, rej) => _rpc.set(id, { resolve: res, reject: rej }));
+}
+
+async function run(url, expected) {
+  $('go'); document.querySelectorAll('button').forEach(b => b.disabled = true); $('verdict').innerHTML = '';
+  try {
+    log(`verifying ${url} …`, 'ok');
+    _prog = (d) => { if (d.progress !== 'verify') return; $('n').textContent = fmt(d.n); if (d.total) $('bar').firstElementChild.style.width = (100*d.n/d.total).toFixed(1) + '%'; };
+    const r = await wcall('verifySnapshot', { url, expected });
+    _prog = null; $('bar').firstElementChild.style.width = '100%';
+    $('n').textContent = fmt(r.coins); $('mb').textContent = r.mb + ' MB';
+    const head = `<p>format: Core dumptxoutset · base <code>#snapshot ${r.baseHash.slice(0,16)}…</code> · net ${r.netMagic}</p>` +
+      `<p>commitment <code>${r.digest.slice(0,40)}…</code> · ${fmt(r.coins)} coins · ${r.mb} MB · ${(r.ms/1000).toFixed(1)}s · 32-byte state</p>`;
+    $('verdict').innerHTML = head + (expected
+      ? `<p class="${r.matches?'ok':'err'}">${r.matches ? `✅ matches the chain-derived commitment — this <b>is</b> the real testnet4 UTXO set, verified with 32 bytes of state` : '❌ does NOT match the expected commitment'}</p>`
+      : `<p class="dim">(no expected value given — commitment shown; this is the prefix, a partial set)</p>`);
+    log(`done: ${fmt(r.coins)} coins → ${r.digest.slice(0,16)}…${expected?(r.matches?' ✓ verified':' ✗ mismatch'):''}`, r.matches===false?'err':'ok');
+  } catch (e) { $('verdict').innerHTML = `<span class="err">error: ${e.message}</span>`; log('error: ' + e.message, 'err'); console.error(e); }
+  document.querySelectorAll('button').forEach(b => b.disabled = false);
+}
+
+$('prefix').onclick = () => run($('url').value || 'data/utxo-prefix.dat', $('exp').value || null);
+$('full').onclick = () => { $('url').value = 'data/snapshot-full.dat'; $('exp').value = FULL_COMMITMENT; run('data/snapshot-full.dat', FULL_COMMITMENT); };
+log('ready — quick-check the prefix, or verify the full snapshot.', 'dim');
+</script>
+</body>
+</html>
