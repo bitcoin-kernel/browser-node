@@ -14,6 +14,7 @@
     "test": "node validate-node-test.mjs && node adversarial-test.mjs && node follow-node-test.mjs && node snapshot-node-test.mjs && node wasm-secp-test.mjs && node swiftsync-test.mjs && node tools/swiftsync-hints.mjs"
   },
   "optionalDependencies": {
+    "node-datachannel": "^0.32.0",
     "webtorrent": "^2.8.0",
     "ws": "^8.18.0"
   }

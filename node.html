@@ -49,9 +49,10 @@ with the <b>full</b> UTXO set hits a memory wall — the whole 14.1M-coin set is
 the set — <b>now wired into this loop</b> (the "set consistency" card above). What remains is applying it at
 <i>scale</i>: a large range / full IBD with a WebTorrent hints file + streamed prevout data for scripts, so the node
 validates to the live tip holding nothing but the accumulator. <code>tools/reach-tip.mjs</code> already reaches the
-live tip today by keeping only the coins the forward blocks spend. Header sync needs the local bridge
-(<code>node bridge.mjs</code> + a testnet4 node); without it the
-validation pipeline still runs.</p>
+live tip today by keeping only the coins the forward blocks spend. Header sync needs a bridge to a testnet4 peer:
+either the local WS bridge (<code>node bridge.mjs</code>, default) or, for a click-and-run demo from anywhere, a
+WebRTC bridge signaled by a server — pass <code>?signal=wss://your.pod/.webrtc&amp;room=&lt;hex&gt;</code>
+(<code>node bridge-webrtc.mjs</code> on the other end). Without any bridge, the validation pipeline still runs.</p>
 
 <script type="module">
 import { connect as liveConnect, syncToTip } from './live-feed.js';
@@ -73,22 +74,31 @@ function wcall(cmd) {
   return new Promise((res, rej) => _rpc.set(id, { resolve: res, reject: rej }));
 }
 
-// ── live header feed (main thread; optional — needs the bridge) ──
+// ── live header feed (main thread; optional — needs a bridge) ──
+// Transport is a LINK PARAMETER, like the snapshot source on verify.html:
+//   ?bridge=ws://localhost:8334                 → WsPeer (local WS↔TCP bridge)
+//   ?signal=wss://your.pod/.webrtc[&room=<hex>] → RtcPeer (WebRTC↔TCP bridge,
+//        signaled by a JSS pod — NAT-friendly, runs anywhere, click-and-run)
 async function runHeaderFeed() {
+  const q = new URLSearchParams(location.search);
+  const signalUrl = q.get('signal'), room = q.get('room'), bridgeUrl = q.get('bridge') || 'ws://localhost:8334';
+  const webrtc = !!signalUrl;
+  $('hsub').textContent = webrtc ? 'via WebRTC' : 'via WS↔TCP bridge';
   try {
     const jl = (n) => fetch(`./engine/schema/${n}.jsonld`).then(r => r.json());
     const [core, proof, p2p, chain, validate] = await Promise.all(['core','proof','p2p','chain','validate'].map(jl));
     const vectors = await (await fetch('./data/testnet4.json')).json();
-    log('connecting header feed to the bridge…');
-    const session = await liveConnect({ bridgeUrl: 'ws://localhost:8334', schemas: { core, proof, p2p, chain, validate }, vectors, log, persist: true });
+    log(`connecting header feed (${webrtc ? 'WebRTC signaling ' + signalUrl : 'WS bridge ' + bridgeUrl})…`);
+    const session = await liveConnect({ bridgeUrl, signalUrl, room, schemas: { core, proof, p2p, chain, validate }, vectors, log, persist: true });
     if (session.resumedFrom) $('htip').textContent = '#' + fmt(session.resumedFrom);
     await syncToTip(session, { onBatch: ({ tip }) => { $('htip').textContent = '#' + fmt(tip.height); } });
     const tip = session.store.tip();
-    $('hdot').classList.add('live'); $('htip').textContent = '#' + fmt(tip.height); $('hsub').textContent = 'synced + validated, live';
+    $('hdot').classList.add('live'); $('htip').textContent = '#' + fmt(tip.height); $('hsub').textContent = (webrtc ? 'WebRTC' : 'bridge') + ': synced + validated, live';
     log(`header tip: #${fmt(tip.height)} (validated from genesis)`, 'ok');
   } catch (e) {
-    $('htip').textContent = 'offline'; $('hsub').innerHTML = '<span class="warn">run node bridge.mjs</span>';
-    log('header feed: ' + e.message + ' — bridge offline; validation pipeline still runs', 'warn');
+    $('htip').textContent = 'offline';
+    $('hsub').innerHTML = webrtc ? '<span class="warn">signaling/bridge unreachable</span>' : '<span class="warn">run node bridge.mjs</span>';
+    log('header feed: ' + e.message + (webrtc ? ' — WebRTC bridge offline' : ' — bridge offline') + '; validation pipeline still runs', 'warn');
   }
 }
 

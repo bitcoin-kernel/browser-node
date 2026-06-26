@@ -2,17 +2,22 @@
 // WS-to-TCP bridge, validating every header (PoW, difficulty/BIP94 retarget,
 // linkage, most-work reorg) with the bitcoin-kernel engine — in the tab.
 // Schemas/vectors are injected so this same module runs headless (Node) and in
-// the browser; only the transport (WsPeer over the bridge) touches the network.
+// the browser; only the transport (the bridge) touches the network.
 import { Codec } from './engine/codec/codec.js';
 import { P2pEngine } from './engine/codec/p2p.js';
 import { HeaderEngine } from './engine/codec/headers.js';
 import { MemoryHeaderStore } from './engine/store/header-store.js';
 import { HeaderSync } from './engine/chain/header-sync.js';
 import { WsPeer } from './peer-ws.js';
+import { RtcPeer } from './peer-rtc.js';
 import { OpfsHeaderStore, opfsAvailable } from './opfs-header-store.js';
 
 // Build engine + connect the peer through the bridge. Returns the live session.
-export async function connect({ bridgeUrl, schemas, vectors, log, persist = false }) {
+// Transport is chosen by which endpoint is given:
+//   bridgeUrl          → WsPeer  (WebSocket↔TCP bridge, e.g. ws://localhost:8334)
+//   signalUrl [+ room] → RtcPeer (WebRTC↔TCP bridge via a signaling server, e.g.
+//                        wss://melvincarvalho.com/.webrtc) — NAT-friendly, no localhost.
+export async function connect({ bridgeUrl, signalUrl, room, schemas, vectors, log, persist = false }) {
   const codec = new Codec(schemas.core, schemas.proof, schemas.p2p);
   const p2p = P2pEngine.fromSchemas(codec, schemas.p2p, schemas.chain, 'btc:testnet4');
   const he = HeaderEngine.fromSchemas(codec, schemas.chain, schemas.validate, 'btc:testnet4');
@@ -30,9 +35,14 @@ export async function connect({ bridgeUrl, schemas, vectors, log, persist = fals
     else log?.('OPFS empty — first sync will persist the chain');
   }
 
-  const peer = new WsPeer(p2p, codec);
-  log?.('connecting to bridge → testnet4 peer…');
-  await peer.connect(bridgeUrl);
+  const peer = signalUrl ? new RtcPeer(p2p, codec) : new WsPeer(p2p, codec);
+  if (signalUrl) {
+    log?.(`connecting via WebRTC (signaling ${signalUrl}) → testnet4 peer…`);
+    await peer.connect(signalUrl, room ? { room } : undefined);
+  } else {
+    log?.('connecting to bridge → testnet4 peer…');
+    await peer.connect(bridgeUrl);
+  }
   log?.('handshake complete (version / verack)', 'ok');
 
   const fetchHeaders = async (locator) => {
